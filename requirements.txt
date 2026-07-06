@@ -1,5 +1,9 @@
 agno>=2.2.10
 streamlit>=1.33.0
 pydantic>=2.7.0
+pydantic-settings>=2.0.0
 openai>=1.30.0
 exa_py>=1.0.7
+httpx>=0.27.0
+tenacity>=8.2.0
+pytest>=8.0.0
