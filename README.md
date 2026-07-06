@@ -3,15 +3,15 @@
 ### 🎓 FREE Step-by-Step Tutorial 
 **👉 [Click here to follow our complete step-by-step tutorial](https://www.theunwindai.com/p/build-an-ai-email-gtm-outreach-agent-team) and learn how to build this from scratch with detailed code walkthroughs, explanations, and best practices.**
 
-An end-to-end, multi-agent Streamlit app that automates B2B outreach using GPT-5 and Exa. It discovers relevant companies, finds the right contacts (Founder's Office, GTM/Sales leadership, Partnerships/BD, Product Marketing), researches website + Reddit insights, and drafts tailored emails in your selected style.
+An end-to-end, multi-agent Streamlit app that automates B2B outreach using GPT-5.4-nano and Exa. It discovers relevant companies, finds the right contacts (Founder's Office, GTM/Sales leadership, Partnerships/BD, Product Marketing), researches website + Reddit insights, and drafts tailored emails in your selected style.
 
 ## Features
 
 - **Multi-agent workflow**:
   - **Company Finder**: Uses Exa to discover companies matching your targeting and offering.
-  - **Contact Finder**: Finds 2–3 relevant decision makers per company and emails (marks inferred emails clearly if needed).
+  - **Contact Finder**: Uses `gpt-4o` to find 2–3 relevant decision makers per company and emails (marks inferred emails clearly if needed).
   - **Researcher**: Pulls 2–4 interesting insights per company from their website and Reddit to enable genuine personalization.
-  - **Email Writer**: Uses GPT-5.4-nano to produce concise, structured outreach emails.
+  - **Email Writer**: Uses `gpt-5.4-nano` to produce concise, structured outreach emails.
 
 - **Operator controls**:
   - **Number of companies** to target (1–10)
@@ -26,7 +26,7 @@ An end-to-end, multi-agent Streamlit app that automates B2B outreach using GPT-5
 Install dependencies from `requirements.txt`:
 
 ```bash
-pip install -r advanced_ai_agents/multi_agent_apps/ai_email_gtm_outreach_agent/requirements.txt
+pip install -r requirements.txt
 ```
 
 Required environment variables (set via sidebar or your shell):
@@ -37,7 +37,7 @@ Required environment variables (set via sidebar or your shell):
 ## How to Run
 
 ```bash
-streamlit run advanced_ai_agents/multi_agent_apps/ai_email_gtm_outreach_agent/ai_email_gtm_outreach_agent.py
+streamlit run app.py
 ```
 
 ## Usage
@@ -50,7 +50,7 @@ streamlit run advanced_ai_agents/multi_agent_apps/ai_email_gtm_outreach_agent/ai
 
 ## Notes
 
-- The app uses the `gpt-5` model via OpenAI. If unavailable in your account, switch the model in `ai_email_gtm_outreach_agent.py` to one you have access to.
+- The app uses `gpt-5.4-nano` (Company Finder, Researcher, Email Writer) and `gpt-4o` (Contact Finder) via OpenAI. If either is unavailable in your account, switch the model in `backend/agents.py` to one you have access to.
 - Exa is used for web discovery; ensure your `EXA_API_KEY` is valid.
 
 ## Troubleshooting
