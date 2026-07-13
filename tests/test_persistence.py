@@ -1,4 +1,5 @@
 import sqlite3
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -6,6 +7,7 @@ from backend.persistence import (
     get_run,
     init_db,
     list_runs,
+    recently_contacted_companies,
     save_run,
     update_email_edit,
     update_email_status,
@@ -89,6 +91,20 @@ def test_get_missing_run_returns_none(tmp_path):
     assert get_run(999, db_path=db) is None
 
 
+def test_cost_and_breakdown_persisted(tmp_path):
+    db = _db(tmp_path)
+    result = _result()
+    result["cost"] = 0.1234
+    result["cost_breakdown"] = {
+        "judge": {"model": "gpt-4o", "input_tokens": 10, "output_tokens": 5, "cost": 0.001}
+    }
+    rid = save_run(result, _inputs(), db_path=db)
+    got = get_run(rid, db_path=db)
+    assert got["cost"] == 0.1234
+    assert got["cost_breakdown"]["judge"]["model"] == "gpt-4o"  # per-stage detail survives reopen
+    assert list_runs(db_path=db)[0]["cost"] == 0.1234
+
+
 def test_edit_clears_stale_override(tmp_path):
     db = _db(tmp_path)
     rid = save_run(_result(), _inputs(), db_path=db)
@@ -106,6 +122,29 @@ def test_update_raises_on_unknown_email(tmp_path):
         update_email_status(rid, "email-999", "approved", db_path=db)
     with pytest.raises(LookupError):
         update_email_edit(rid, "email-999", "s", "b", {"ready": True}, "edited", db_path=db)
+
+
+def test_recently_contacted_within_window(tmp_path):
+    db = _db(tmp_path)
+    save_run(_result(), _inputs(), db_path=db)
+    assert "Acme" in recently_contacted_companies(30, db_path=db)
+    assert recently_contacted_companies(0, db_path=db) == []  # disabled
+
+
+def test_recently_contacted_excludes_old_runs(tmp_path):
+    db = _db(tmp_path)
+    rid = save_run(_result(), _inputs(), db_path=db)
+    old = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
+    conn = sqlite3.connect(db)
+    conn.execute("UPDATE runs SET created_at = ? WHERE id = ?", (old, rid))
+    conn.commit()
+    conn.close()
+    # 60 days ago is outside a 30-day cooldown -> eligible again.
+    assert "Acme" not in recently_contacted_companies(30, db_path=db)
+
+
+def test_recently_contacted_missing_db_returns_empty(tmp_path):
+    assert recently_contacted_companies(30, db_path=str(tmp_path / "nope.db")) == []
 
 
 def test_init_db_migrates_missing_columns(tmp_path):

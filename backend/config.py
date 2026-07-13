@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"  # Phase 8: cache
     # Phase 6: separate application DB for campaign history (NOT the agno session DB).
     app_db_path: str = "tmp/campaigns.db"
+    # Don't re-contact a company we generated outreach for within this many days.
+    enable_contact_suppression: bool = True
+    contact_cooldown_days: int = 30
 
     # --- Model IDs (overridable per agent) ---
     company_finder_model: str = "gpt-5.4-nano"

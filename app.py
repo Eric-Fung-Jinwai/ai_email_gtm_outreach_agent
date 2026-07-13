@@ -68,6 +68,18 @@ def main() -> None:
                 if detail:
                     details.write(detail)
 
+            # Suppress companies contacted within the cooldown window (from history).
+            suppress = []
+            if settings.enable_contact_suppression:
+                try:
+                    suppress = persistence.recently_contacted_companies(settings.contact_cooldown_days)
+                except Exception:
+                    suppress = []
+                if suppress:
+                    st.caption(
+                        f"Excluding {len(suppress)} company(ies) contacted in the last "
+                        f"{settings.contact_cooldown_days} days."
+                    )
             try:
                 results = run_pipeline(
                     target_desc=target_desc.strip(),
@@ -78,6 +90,7 @@ def main() -> None:
                     num_companies=int(num_companies),
                     email_style=email_style,
                     progress_cb=progress_cb,
+                    suppress_companies=suppress,
                 )
                 progress.progress(100)
                 results["calendar_link"] = calendar_link.strip() or None  # for edit re-eval
@@ -115,6 +128,15 @@ def _render_results() -> None:
     contacts = results.get("contacts", [])
     research = results.get("research", [])
     emails = results.get("emails", [])
+
+    cost = results.get("cost")
+    if cost is not None:
+        breakdown = results.get("cost_breakdown") or {}
+        label = f"💵 Estimated LLM cost this run: ${cost:.4f}"
+        if breakdown:
+            parts = ", ".join(f"{m}: ${v['cost']:.4f}" for m, v in breakdown.items())
+            label += f" ({parts})"
+        st.caption(label + "  — prices are estimates; see backend/cost.py")
 
     st.subheader("Top target companies")
     if companies:

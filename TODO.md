@@ -219,8 +219,18 @@ statuses persist (Phase 6).
       pipeline join (in `app.py`, post-`run_pipeline`). Workers never write.
 - [x] UI: sidebar lists past runs (newest first) + reopen; approve/reject/edit
       persist durably (`update_email_status` / `update_email_edit`).
-- [x] Tests: `tests/test_persistence.py` — save/get round-trip (evidence preserved),
-      list newest-first, status update, edit update, missing run, schema auto-create.
+- [x] **Contact-cooldown suppression:** `recently_contacted_companies(cooldown_days)`
+      + pipeline `suppress_companies` — a company we generated ANY email for (approved
+      or rejected — a rejection means "not a fit", so back off too) is excluded from
+      new runs for `CONTACT_COOLDOWN_DAYS` (default 30), then eligible again. Excluded
+      in the finder prompt AND post-filtered (shared `text_utils.normalize_company_name`).
+- [x] **Top-up toward N:** `_collect_companies` retries the finder (bounded, 3
+      attempts), each excluding suppressed + already-found, aiming for N fresh
+      companies. May return **fewer than N** if not enough eligible companies exist
+      (stops early rather than looping/padding). Single call when nothing suppressed.
+- [x] Tests: save/get round-trip, list newest-first, status/edit updates, override
+      cleared on edit, update-raises-on-unknown, schema migration, cooldown
+      within/outside window, pipeline suppression filter.
 
 **Acceptance:** ✅ A run survives restart and is reloadable as a campaign; approval
 statuses persist across refresh. (`tmp/` is gitignored → DB not committed.)
@@ -275,15 +285,25 @@ failure yields partial result.
 
 ---
 
-## Phase 9 — Cost / token tracking
+## Phase 9 — Cost / token tracking  ✅ DONE
 
-Cheap once logging exists; strong, underused agentic-work signal.
+Strong, underused agentic-work signal.
 
-- [ ] Capture per-call token usage from run output; map to a pricing table.
-- [ ] Store per-run cost in the app DB; show per-run cost in UI.
-- [ ] Note the irony: the LLM-judge ADDS cost → that's exactly why deterministic
-      checks gate it (Phase 4b). Frame as a unit-economics story.
-- [ ] Attribute cache savings (Phase 8) to a concrete "% cost cut" number.
+- [x] `backend/cost.py`: `MeteringAgent` wraps every agent (finder/contacts/research/
+      writer/judge/repair) and records token usage into a `CostTracker`, grouped **by
+      stage** (not model, so contact_finder and judge stay separate even though both
+      default to gpt-4o); priced by a static `PRICING` table (estimates, per-1M tokens;
+      unknown model → non-zero default).
+- [x] `extract_usage` handles agno `metrics` + OpenAI-style `usage` (incl. token lists);
+      returns (0,0) safely for fakes.
+- [x] Pipeline returns `cost` + per-stage `cost_breakdown`; both persisted
+      (`runs.cost` + `runs.cost_breakdown_json`) so reopened campaigns keep the detail;
+      UI shows "💵 Estimated LLM cost this run: $X (per-stage …)".
+- [x] Judge cost lands on its **own stage line** → makes the "gate the judge to bound
+      cost" story concrete (deterministic gate keeps the paid gpt-4o judge off most drafts).
+- [x] Tests: usage extraction (all shapes), pricing, tracker/breakdown, metering
+      wrapper, pipeline captures cost end-to-end, cost persisted + listed.
+- [ ] Attribute cache savings to a concrete "% cost cut" number — needs Phase 8 cache.
 
 ---
 

@@ -19,7 +19,7 @@ thread AFTER the join, so SQLite's single-writer never sees concurrent writes.
 import json
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -50,7 +50,7 @@ _EXPECTED_COLUMNS = {
         "created_at": "TEXT", "target_desc": "TEXT", "offering_desc": "TEXT",
         "sender_name": "TEXT", "sender_company": "TEXT", "calendar_link": "TEXT",
         "num_companies": "INTEGER", "email_style": "TEXT", "snapshot_json": "TEXT",
-        "cost": "REAL",
+        "cost": "REAL", "cost_breakdown_json": "TEXT",
     },
     "emails": {
         "run_id": "INTEGER", "email_id": "TEXT", "company": "TEXT", "contact": "TEXT",
@@ -84,7 +84,8 @@ def init_db(db_path: Optional[str] = None) -> None:
                 num_companies INTEGER,
                 email_style TEXT,
                 snapshot_json TEXT NOT NULL,
-                cost REAL
+                cost REAL,
+                cost_breakdown_json TEXT
             );
             CREATE TABLE IF NOT EXISTS emails (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -118,8 +119,8 @@ def save_run(result: Dict[str, Any], inputs: Dict[str, Any], db_path: Optional[s
     with _connect(db_path) as conn:
         cur = conn.execute(
             "INSERT INTO runs (created_at, target_desc, offering_desc, sender_name, "
-            "sender_company, calendar_link, num_companies, email_style, snapshot_json, cost) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "sender_company, calendar_link, num_companies, email_style, snapshot_json, "
+            "cost, cost_breakdown_json) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (
                 datetime.now(timezone.utc).isoformat(),
                 inputs.get("target_desc"),
@@ -130,7 +131,8 @@ def save_run(result: Dict[str, Any], inputs: Dict[str, Any], db_path: Optional[s
                 inputs.get("num_companies"),
                 inputs.get("email_style"),
                 json.dumps(snapshot),
-                None,  # cost — Phase 9
+                result.get("cost"),  # Phase 9: estimated LLM cost
+                json.dumps(result.get("cost_breakdown") or {}),
             ),
         )
         run_id = int(cur.lastrowid)
@@ -162,7 +164,7 @@ def list_runs(db_path: Optional[str] = None) -> List[Dict[str, Any]]:
     """Summaries of all runs, newest first."""
     with _connect(db_path) as conn:
         rows = conn.execute(
-            "SELECT r.id, r.created_at, r.target_desc, COUNT(e.id) AS n_emails, "
+            "SELECT r.id, r.created_at, r.target_desc, r.cost, COUNT(e.id) AS n_emails, "
             "SUM(CASE WHEN e.status='approved' THEN 1 ELSE 0 END) AS n_approved "
             "FROM runs r LEFT JOIN emails e ON e.run_id = r.id "
             "GROUP BY r.id ORDER BY r.id DESC"
@@ -199,6 +201,8 @@ def get_run(run_id: int, db_path: Optional[str] = None) -> Optional[Dict[str, An
         "research": snapshot.get("research", []),
         "emails": emails,
         "calendar_link": snapshot.get("calendar_link"),
+        "cost": run["cost"],
+        "cost_breakdown": json.loads(run["cost_breakdown_json"]) if run["cost_breakdown_json"] else {},
         "run_id": run_id,
     }
 
@@ -206,6 +210,31 @@ def get_run(run_id: int, db_path: Optional[str] = None) -> Optional[Dict[str, An
 def _require_updated(cur, run_id: int, email_id: str) -> None:
     if cur.rowcount == 0:
         raise LookupError(f"no email '{email_id}' in run {run_id} — nothing updated")
+
+
+def recently_contacted_companies(cooldown_days: int, db_path: Optional[str] = None) -> List[str]:
+    """Company names we generated outreach for within the last ``cooldown_days``.
+
+    Counts a company as contacted if we generated ANY email for it, regardless of
+    approval status: a rejected draft signals the company likely isn't a fit, so we
+    back off for the cooldown too. Returns original names (newest first); the caller
+    normalizes for matching. ``cooldown_days <= 0`` disables. Tolerant of a missing DB.
+    """
+    if cooldown_days <= 0:
+        return []
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=cooldown_days)).isoformat()
+    try:
+        with _connect(db_path) as conn:
+            rows = conn.execute(
+                "SELECT e.company, MAX(r.created_at) AS last_seen "
+                "FROM emails e JOIN runs r ON e.run_id = r.id "
+                "WHERE r.created_at >= ? AND e.company IS NOT NULL AND e.company != '' "
+                "GROUP BY e.company ORDER BY last_seen DESC",
+                (cutoff,),
+            ).fetchall()
+        return [row["company"] for row in rows]
+    except sqlite3.OperationalError:
+        return []  # tables not created yet
 
 
 def update_email_status(

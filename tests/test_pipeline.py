@@ -434,6 +434,54 @@ def test_repair_can_be_disabled(monkeypatch):
     assert e["eval"]["ready"] is False        # unfaithful, left as-is
 
 
+def test_pipeline_suppresses_recently_contacted_companies():
+    """A company in the cooldown list must be filtered out (post-filter safety net,
+    even if the model ignores the exclusion instruction)."""
+    agents = Agents(
+        company_finder=_CannedAgent(
+            json.dumps({"companies": [{"name": "Acme"}, {"name": "Globex"}]})
+        ),
+        contact_finder=_CannedAgent(
+            json.dumps({"name": "Globex", "contacts": [{"full_name": "G", "email": "g@globex.com", "inferred": False}]})
+        ),
+        researcher=_CannedAgent(json.dumps({"name": "Globex", "insights": ["Globex hiring"]})),
+        email_writer=_CannedAgent(json.dumps({"emails": []})),
+    )
+    result = run_pipeline(
+        target_desc="t", offering_desc="o", sender_name="S", sender_company="C",
+        calendar_link=None, num_companies=2, agents=agents,
+        suppress_companies=["Acme Inc"],  # normalizes to "acme" -> matches "Acme"
+    )
+    names = [c["name"] for c in result["companies"]]
+    assert "Acme" not in names and "Globex" in names
+
+
+def test_pipeline_tops_up_to_n_when_some_suppressed():
+    """When suppression removes companies, the finder is retried to reach N fresh ones."""
+    pool = ["Acme", "Globex", "Initech", "Umbrella"]
+
+    def finder(prompt):
+        # Return at most 2 pool companies not named in the prompt's exclude clause,
+        # so reaching N=3 requires a second attempt (exercises the top-up retry).
+        available = [n for n in pool if n not in prompt]
+        return json.dumps({"companies": [{"name": n} for n in available[:2]]})
+
+    agents = Agents(
+        company_finder=_CannedAgent(finder),
+        contact_finder=_CannedAgent(json.dumps({"name": "x", "contacts": []})),
+        researcher=_CannedAgent(json.dumps({"name": "x", "insights": []})),
+        email_writer=_CannedAgent(json.dumps({"emails": []})),
+    )
+    result = run_pipeline(
+        target_desc="t", offering_desc="o", sender_name="S", sender_company="C",
+        calendar_link=None, num_companies=3, agents=agents, suppress_companies=["Acme"],
+    )
+    names = [c["name"] for c in result["companies"]]
+    assert "Acme" not in names
+    assert len(names) == 3  # topped up to N with fresh companies
+    assert len(names) == len(set(names))  # no duplicates across attempts
+
+
 def test_fanout_isolates_per_company_failure():
     """One company raising must not sink the batch; it yields an error record."""
 
@@ -489,6 +537,39 @@ def test_run_pipeline_offline_with_mocked_agents(fake_agents):
     # Workflow metadata (Phase 5): stable id + initial approval status.
     assert result["emails"][0]["id"] == "email-0"
     assert result["emails"][0]["status"] == "drafted"
+    # Cost tracking (Phase 9): present; 0.0 here since the fakes report no usage.
+    assert isinstance(result["cost"], float)
+    assert "cost_breakdown" in result
+
+
+def test_pipeline_captures_cost_from_token_usage():
+    class _UsageAgent:
+        def __init__(self, content):
+            self._content = content
+
+        def _resp(self):
+            return type("R", (), {"content": self._content, "metrics": {"input_tokens": 100, "output_tokens": 50}})()
+
+        async def arun(self, prompt):
+            return self._resp()
+
+        def run(self, prompt):
+            return self._resp()
+
+    agents = Agents(
+        company_finder=_UsageAgent(json.dumps({"companies": [{"name": "Acme"}]})),
+        contact_finder=_UsageAgent(
+            json.dumps({"name": "Acme", "contacts": [{"full_name": "A", "email": "a@acme.com", "inferred": False}]})
+        ),
+        researcher=_UsageAgent(json.dumps({"name": "Acme", "insights": ["Acme hiring"]})),
+        email_writer=_UsageAgent(json.dumps({"emails": [{"company": "Acme", "contact": "A", "subject": "s", "body": "b"}]})),
+    )
+    result = run_pipeline(
+        target_desc="t", offering_desc="o", sender_name="S", sender_company="C",
+        calendar_link=None, num_companies=1, agents=agents,
+    )
+    assert result["cost"] > 0
+    assert result["cost_breakdown"]  # per-model usage recorded
 
 
 def test_pipeline_respects_company_limit(fake_agents):
