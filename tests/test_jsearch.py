@@ -38,12 +38,21 @@ def _raw(jobs):
 def test_normalize_strips_legal_suffixes_and_punctuation():
     assert _normalize_company_name("Acme, Inc.") == "acme"
     assert _normalize_company_name("Globex LLC") == "globex"
+    assert _normalize_company_name("IBM Corporation") == "ibm"
 
 
-def test_employer_matches_ignores_suffixes():
-    assert _employer_matches("IBM Corp", "IBM")
+def test_employer_matches_ignores_suffixes_and_token_subsets():
+    assert _employer_matches("IBM Corp", "IBM")            # suffix stripped -> exact
+    assert _employer_matches("IBM Corporation", "IBM")     # suffix stripped -> exact
     assert _employer_matches("Acme Inc", "acme")
-    assert not _employer_matches("Jobot", "IBM")  # staffing repost
+    assert _employer_matches("Acme Labs", "Acme")          # token subset
+
+
+def test_employer_matches_rejects_false_positives():
+    assert not _employer_matches("Jobot", "IBM")           # staffing repost
+    assert not _employer_matches("Goldman Sachs", "Go")    # no raw substring
+    assert not _employer_matches("Initech", "Init")        # substring but not a token
+    assert not _employer_matches("Go Daddy", "Go")         # short single-token acronym
 
 
 def test_extract_tech_word_boundaries():

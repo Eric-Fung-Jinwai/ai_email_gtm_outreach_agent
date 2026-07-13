@@ -28,7 +28,10 @@ class Settings(BaseSettings):
     rapidapi_key: str = ""  # Phase 4: job postings (JSearch)
     jsearch_country: str = "us"
     jsearch_max_jobs: int = 5
+    jsearch_max_concurrency: int = 2  # own bound so slow JSearch can't throttle LLM work
     redis_url: str = "redis://localhost:6379/0"  # Phase 8: cache
+    # Phase 6: separate application DB for campaign history (NOT the agno session DB).
+    app_db_path: str = "tmp/campaigns.db"
 
     # --- Model IDs (overridable per agent) ---
     company_finder_model: str = "gpt-5.4-nano"
@@ -48,6 +51,19 @@ class Settings(BaseSettings):
     # Inferred (guessed) contact emails carry deliverability/privacy/compliance
     # risk. Excluded from generated outreach by default; opt in explicitly.
     include_inferred_contacts: bool = False
+
+    # --- Email evaluation (Phase 4b deterministic gate) ---
+    email_min_words: int = 40
+    email_max_words: int = 200
+
+    # --- LLM faithfulness judge (Phase 4c) ---
+    # Paid; runs only on emails that pass the deterministic gate. Off by default.
+    enable_llm_judge: bool = False
+    judge_model: str = "gpt-4o"  # stronger model for judgment; few calls (gated)
+    judge_max_concurrency: int = 2  # own bound to smooth rate-limit/cost spikes
+    # One bounded regeneration when the judge finds an email unfaithful. Only runs
+    # when the judge runs; capped at a single retry to avoid a cost spiral.
+    enable_repair: bool = True
 
     @property
     def has_openai_key(self) -> bool:
@@ -73,6 +89,15 @@ class Settings(BaseSettings):
                 "Missing required API key(s): "
                 + ", ".join(missing)
                 + ". Set them in your .env file (see .env.example)."
+            )
+
+    def require_openai_key(self) -> None:
+        """Raise if OpenAI is unavailable. For OpenAI-only entrypoints (e.g. the
+        golden-set judge eval) that don't need Exa."""
+        if not self.openai_api_key:
+            raise RuntimeError(
+                "Missing required API key: OPENAI_API_KEY. "
+                "Set it in your .env file (see .env.example)."
             )
 
 

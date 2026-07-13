@@ -1,0 +1,86 @@
+[
+  {
+    "id": "faithful-hiring",
+    "email": {"subject": "Scaling your Chicago backend team", "body": "Hi Ada, I saw Acme is hiring several backend engineers in Chicago, which usually signals real scaling pressure on the platform team. We help teams in exactly that spot cut infra toil so they ship faster without adding headcount. Would you be open to a short intro call next week?"},
+    "evidence": [{"text": "Hiring: Senior Backend Engineer (Chicago, Illinois, posted 2 days ago). Signals: python, kubernetes.", "source_type": "job_posting"}],
+    "label_faithful": true,
+    "note": "Every company claim (hiring backend engineers in Chicago) traces to the job posting."
+  },
+  {
+    "id": "unfaithful-funding",
+    "email": {"subject": "Congrats on the raise", "body": "Hi Ada, congrats on Acme's recent $50M Series B! With that fresh capital you're surely scaling fast. We help newly funded teams stand up infrastructure quickly. Could we grab 15 minutes this week to explore a fit?"},
+    "evidence": [{"text": "Hiring: Senior Backend Engineer (Chicago, Illinois, posted 2 days ago). Signals: python, kubernetes.", "source_type": "job_posting"}],
+    "label_faithful": false,
+    "note": "The $50M Series B claim is nowhere in the evidence — fabricated."
+  },
+  {
+    "id": "faithful-generic",
+    "email": {"subject": "Quick idea for your team", "body": "Hi Ada, I lead partnerships at Northstar and we help B2B teams streamline their outbound. I'd love to learn more about how Acme approaches growth and share a couple of ideas that might be relevant. Would you be open to a brief chat next week to discuss?"},
+    "evidence": [{"text": "Acme's blog discusses their approach to developer tooling.", "source_type": "website"}],
+    "label_faithful": true,
+    "note": "Generic (low personalization) but makes no false company claims, so it is faithful."
+  },
+  {
+    "id": "unfaithful-location",
+    "email": {"subject": "In town near your NYC office", "body": "Hi Ada, I'll be near Acme's New York office next week and would love to stop by. We help teams like yours modernize their data stack. Are you free for a coffee on Tuesday to discuss?"},
+    "evidence": [{"text": "Hiring: Platform Engineer (Remote, posted 5 days ago). Signals: aws, terraform.", "source_type": "job_posting"}],
+    "label_faithful": false,
+    "note": "Evidence says remote; the 'New York office' claim is invented."
+  },
+  {
+    "id": "faithful-reddit",
+    "email": {"subject": "Loved the API docs praise", "body": "Hi Ada, I noticed developers on Reddit repeatedly praising Acme's API documentation — that kind of DX reputation is rare. We help teams extend that same polish to their onboarding flows. Would a short call next week be useful to compare notes?"},
+    "evidence": [{"text": "Reddit users in r/devtools praise Acme's clear API documentation.", "source_type": "reddit"}],
+    "label_faithful": true,
+    "note": "The praise-for-API-docs claim traces directly to the Reddit evidence."
+  },
+  {
+    "id": "unfaithful-product-launch",
+    "email": {"subject": "Your new AI product", "body": "Hi Ada, huge congrats on launching Acme's new AI assistant — it looks incredible. Teams shipping AI features usually need stronger eval tooling, which is our focus. Can we chat this week about how we could help?"},
+    "evidence": [{"text": "Hiring: Backend Engineer (Chicago, posted 1 day ago). Signals: python, postgres.", "source_type": "job_posting"}],
+    "label_faithful": false,
+    "note": "No evidence of any AI product launch — hallucinated."
+  },
+  {
+    "id": "faithful-multi",
+    "email": {"subject": "Python + Kubernetes scaling", "body": "Hi Ada, between Acme hiring backend engineers in Austin and the Python/Kubernetes focus in those roles, it looks like you're scaling core infrastructure. We help teams tame exactly that kind of growth. Open to a quick intro call next week?"},
+    "evidence": [{"text": "Hiring: Backend Engineer (Austin, Texas, posted 3 days ago). Signals: python, kubernetes, aws.", "source_type": "job_posting"}],
+    "label_faithful": true,
+    "note": "Both claims (Austin hiring, Python/Kubernetes) are grounded in one posting."
+  },
+  {
+    "id": "unfaithful-headcount",
+    "email": {"subject": "Supporting your 500-engineer org", "body": "Hi Ada, supporting an engineering org of 500+ like Acme's is no small feat. We help large teams reduce operational overhead. Could we find 15 minutes this week to explore whether we can help?"},
+    "evidence": [{"text": "Hiring: 2 Site Reliability Engineers (Remote, posted 4 days ago). Signals: terraform, aws.", "source_type": "job_posting"}],
+    "label_faithful": false,
+    "note": "Evidence shows 2 SRE openings; '500-engineer org' is a fabricated scale."
+  },
+  {
+    "id": "faithful-tech-stack",
+    "email": {"subject": "Terraform + AWS reliability", "body": "Hi Ada, the SRE roles Acme is hiring for lean heavily on Terraform and AWS, which usually means reliability is a front-of-mind priority. That's exactly where we help. Would you be open to a brief call next week to discuss?"},
+    "evidence": [{"text": "Hiring: Site Reliability Engineer (Remote, posted 4 days ago). Signals: terraform, aws.", "source_type": "job_posting"}],
+    "label_faithful": true,
+    "note": "Tech-stack claims (Terraform, AWS) are grounded in the posting signals."
+  },
+  {
+    "id": "unfaithful-award",
+    "email": {"subject": "Congrats on the award", "body": "Hi Ada, I saw Acme won Best Startup of 2026 — well deserved! Fast-growing award winners often need help scaling operations, which is our specialty. Can we grab time this week to discuss?"},
+    "evidence": [{"text": "Acme's website describes their product roadmap for 2026.", "source_type": "website"}],
+    "label_faithful": false,
+    "note": "No award is mentioned anywhere in the evidence — invented."
+  },
+  {
+    "id": "faithful-no-evidence-generic",
+    "email": {"subject": "Introduction", "body": "Hi Ada, I'm reaching out from Northstar because we work with B2B teams on outbound efficiency. I'd love to learn how Acme thinks about growth and whether there's a fit. Would you be open to a short introductory call next week to discuss?"},
+    "evidence": [],
+    "label_faithful": true,
+    "note": "No evidence and no specific company claims -> nothing to hallucinate, faithful."
+  },
+  {
+    "id": "unfaithful-no-evidence-claim",
+    "email": {"subject": "Your London expansion", "body": "Hi Ada, congratulations on opening Acme's new London office — expanding into the UK is a big step. We help teams localize their go-to-market for new regions. Could we chat this week about supporting the expansion?"},
+    "evidence": [],
+    "label_faithful": false,
+    "note": "Specific 'London office' claim with zero supporting evidence -> ungrounded."
+  }
+]

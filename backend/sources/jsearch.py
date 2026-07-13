@@ -22,7 +22,13 @@ from backend.config import Settings, get_settings
 from backend.models import Insight
 
 _HOST = "jsearch.p.rapidapi.com"
-_LEGAL_SUFFIXES = {"inc", "llc", "ltd", "corp", "co", "company", "gmbh", "plc", "sa", "ag"}
+_LEGAL_SUFFIXES = {
+    "inc", "incorporated", "llc", "ltd", "limited", "corp", "corporation",
+    "co", "company", "gmbh", "plc", "sa", "ag",
+}
+# A single-token acronym must be at least this long to match via token-subset,
+# so "Go" doesn't match "Go Daddy" while "IBM"/"SAP" still work.
+_MIN_ACRONYM_LEN = 3
 
 # Curated tech/skill vocabulary for pulling signal out of a ~600-word JD wall.
 _TECH_TERMS = [
@@ -44,11 +50,26 @@ def _normalize_company_name(name: str) -> str:
 
 
 def _employer_matches(employer_name: Optional[str], target_name: str) -> bool:
+    """Token-aware match, never raw substring.
+
+    - exact normalized match, or
+    - one name's token set is a subset of the other ("Acme" vs "Acme Labs").
+    Raw substring is deliberately avoided so "Go" can't match "Goldman" and
+    "Init" can't match "Initech". Single short acronyms must be exact.
+    """
     emp = _normalize_company_name(employer_name or "")
     tgt = _normalize_company_name(target_name)
     if not emp or not tgt:
         return False
-    return emp == tgt or tgt in emp or emp in tgt
+    if emp == tgt:
+        return True
+    emp_tokens, tgt_tokens = set(emp.split()), set(tgt.split())
+    if tgt_tokens <= emp_tokens or emp_tokens <= tgt_tokens:
+        smaller = min((tgt_tokens, emp_tokens), key=len)
+        if len(smaller) >= 2:
+            return True
+        return len(next(iter(smaller))) >= _MIN_ACRONYM_LEN
+    return False
 
 
 def _extract_tech(description: str, limit: int = 6) -> List[str]:

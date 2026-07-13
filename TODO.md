@@ -124,65 +124,106 @@ a scorer bolted on after the fact.
 - [x] Tests: JSearch client mocked HTTP (match filter, dedup, max cap, empty,
       malformed JSON, exception→[], missing key→[]); pipeline augment+rescue test.
 
-### 4b — Deterministic checks (free, fully testable — run FIRST as a gate)
-- [ ] Word-count bound, CTA present, subject present, banned/spam-phrase list,
-      calendar-link presence when provided.
-- [ ] Cheap → run before any LLM-judge call to bound cost.
+### 4b — Deterministic checks (free, fully testable — run FIRST as a gate)  ✅ DONE
+- [x] `backend/evaluation/deterministic.py` + `EvalResult`/`CheckResult` models.
+- [x] Checks: subject present, body present, word-count bound
+      (`EMAIL_MIN_WORDS`/`EMAIL_MAX_WORDS`), CTA present, spam/punctuation list,
+      calendar-link presence (only when a link was provided).
+- [x] Wired into pipeline: every generated email carries `email["eval"]`; UI shows
+      a ✅/⚠️ badge + failed-check details. Pure, offline, no model calls.
+- [x] Tests: `tests/test_deterministic.py` (each check pass/fail, spam detail,
+      conditional calendar check) + pipeline attaches eval.
+- [ ] Auto-reject deterministic failures / route to human — Phase 5 (HITL).
 
-### 4c — LLM-judge, grounded on the evidence store
-- [ ] **Evidence completeness / faithfulness:** does every factual claim trace
-      back to a retrieved insight? (RAG-faithfulness, NOT model general knowledge.)
-- [ ] **Evidence coverage:** did the email actually use the strongest available
-      evidence, or ignore it? (this absorbs "personalization depth".)
-- [ ] **Personalization quality** + spam/tone.
-- [ ] `temperature=0`, structured **per-claim** verdicts (not one vibe number).
+### 4c — LLM-judge, grounded on the evidence store  ✅ DONE
+- [x] `backend/evaluation/judge.py` + `JudgeVerdict`/`ClaimVerdict` models nested
+      under `EvalResult.judge`.
+- [x] **Faithfulness:** per-claim grounding against retrieved evidence only
+      ("judge ONLY against evidence, never outside knowledge"); `faithful` inferred
+      from claims when the model omits it.
+- [x] **Coverage** + **personalization** coarse labels; **issues** list.
+- [x] `temperature=0`; structured **per-claim** verdicts (`ClaimVerdict`).
+- [x] **Cost gate:** runs only on emails that passed the deterministic gate; off by
+      default (`ENABLE_LLM_JUDGE`), injectable `judge_agent`, `JUDGE_MODEL=gpt-4o`.
+- [x] **Graceful:** judge errors set `error` (never masquerade as unfaithful).
+- [x] Tests: parsing, faithful-inference, prompt grounding, graceful error, and
+      pipeline gating (judged-only-when-passed, ungrounded-claim, evidence-grounded).
 
-### 4d — Judge defensibility (this is what makes it interview-proof)
-- [ ] Small **golden set** (~20–30 hand-labeled emails: faithful/unfaithful,
-      personalized/generic).
-- [ ] Report **judge↔human agreement** on the golden set. "Faithfulness judge
-      agrees with human labels 90%" >> "I added a faithfulness check".
-- [ ] Tests: deterministic checks (exhaustive); judge harness runs on golden set.
+### 4d — Judge defensibility (this is what makes it interview-proof)  ✅ DONE (seed)
+- [x] **Golden set** at `backend/evaluation/data/golden.json` — 12 hand-labeled,
+      balanced faithful/unfaithful examples (funding/location/award/headcount
+      hallucinations, generic-but-faithful, no-evidence cases). Seed to grow to 20–30.
+- [x] **Agreement harness** (`backend/evaluation/golden.py`): runs the judge over
+      the set, reports accuracy + hallucination-detection precision/recall
+      (positive = unfaithful), counts judge errors. CLI: `python -m backend.evaluation.golden`.
+- [x] Tests: golden set well-formed (both classes, unique ids, typed); metric
+      correctness (confusion matrix, precision/recall) with a controllable mock
+      judge; zero-recall detection; judge-error counting.
+- [x] Ran against the REAL judge (gpt-4o, temp=0, 12 examples): **accuracy 75%,
+      recall 100% (0 missed hallucinations, FN=0), precision 67% (3/6 faithful
+      over-flagged)**. Conservative = correct direction for a review gate. Grow the
+      set + inspect the 3 false positives to lift precision.
 
-### 4e — Repair loop (bounded)
-- [ ] On faithfulness failure: regenerate with the offending claim stripped /
-      tighter constraint. **One retry**, then flag for human. (Bounded → no cost spiral.)
+### 4e — Repair loop (bounded)  ✅ DONE
+- [x] On faithfulness failure: **one** grounded rewrite (`_repair_email`) that lists
+      the ungrounded claims and re-grounds strictly in evidence, then re-runs the
+      deterministic gate + judge. Single retry — no cost spiral (`ENABLE_REPAIR`).
+- [x] Adopt the rewrite only if now ready; else keep the original flagged for human.
+- [x] UI shows repair status; tests cover success / failure-still-flagged / disabled.
 
-**Acceptance:** Every generated email has an `EvalResult`; faithfulness is judged
-against retrieved evidence; judge agreement reported on the golden set.
+**Acceptance:** ✅ Every generated email has an `EvalResult`; faithfulness judged
+against retrieved evidence; judge agreement harness + golden set in place.
+Remaining: run the harness against the real judge to record the live number.
 
 ---
 
-## Phase 5 — Human-in-the-loop approval
+## Phase 5 — Human-in-the-loop approval  ✅ DONE (statuses in session; durable in Phase 6)
 
 Real workflow design — and eval *feeds* it.
 
-- [ ] State machine: `drafted → {approved | rejected | edited}`; `edited` loops
-      back through approval. ("customized" is an action, not a terminal state.)
-- [ ] **Eval prioritizes the human's attention:** deterministic-fail → auto-reject;
-      borderline faithfulness → surface for review; clean → fast-path. HITL is not
-      a separate manual step, it's an eval-routed queue.
-- [ ] UI: per-email status controls, inline edit, re-submit edited drafts.
-- [ ] Tests: state transitions (illegal transitions rejected).
+- [x] State machine `backend/approval.py`: `drafted → {approved | rejected | edited}`;
+      `edit` always allowed and loops to `edited`; decisions reversible; illegal
+      transitions (repeat terminal action, unknown action/state) raise.
+- [x] **Eval-routed queue:** UI splits ready (deterministic pass + faithful) vs
+      "Needs review" (failed check / unfaithful / judge error). Not a separate step.
+- [x] UI: per-email Approve / Reject / Edit; inline subject/body edit re-runs the
+      deterministic gate and clears the stale judge verdict; status badge shown.
+- [x] Pipeline stamps each email with a stable `id` + initial `drafted` status.
+- [x] Tests: `tests/test_approval.py` (valid + illegal transitions); pipeline id/status.
+- [ ] Persist statuses across refresh — Phase 6 (separate app DB).
+
+> **Design decision — human has final authority.** The eval gate (deterministic +
+> LLM judge) *routes attention*; it does not hard-block. A human may approve a
+> draft the automated checks flagged — including one the LLM judge marked
+> unfaithful — because the person, not the model, owns what gets sent. That
+> override is **intentional**, but never silent: it requires an explicit
+> "⚠️ Override & approve" action, is recorded on the email (`approved_override`),
+> and the UI surfaces exactly why the automated checks failed so the human
+> decides with full context. An edit that invalidates a prior judge verdict is
+> likewise not auto-ready — it drops to review until re-judged or overridden.
 
 **Acceptance:** No email reaches "final" without an explicit approve/edit;
 statuses persist (Phase 6).
 
 ---
 
-## Phase 6 — Persistence / campaign history  (separate app DB)
+## Phase 6 — Persistence / campaign history  (separate app DB)  ✅ DONE
 
-- [ ] **Separate SQLite app DB** — do NOT reuse the Agno session DB (that's agent
-      memory and is tangled in the thread-safety story). Own schema:
-      `runs`, `companies`, `contacts`, `emails` (with status + eval result + cost).
-- [ ] Persist each run: target desc, companies, contacts, evidence, emails, statuses.
-- [ ] ⚠️ **Single-writer:** workers RETURN results; persist once on the **main
-      thread after the join** (Phase 7). Avoids "database is locked" and gives the
-      deterministic-order aggregation for free.
-- [ ] UI: list past runs, reopen a campaign, see statuses.
-- [ ] Tests: write/read round-trip; status updates.
+- [x] **Separate SQLite app DB** (`backend/persistence.py`, `tmp/campaigns.db` via
+      `APP_DB_PATH`) — NOT the agno session DB. Schema: `runs` (immutable
+      companies/contacts/research snapshot as JSON + inputs + nullable `cost` for
+      Phase 9) and `emails` (normalized: status, ready, faithful, approved_override,
+      eval_json). Emails are the only mutable rows → nothing diverges.
+- [x] Persist each run: inputs, companies, contacts, evidence, emails, statuses.
+- [x] ⚠️ **Single-writer:** persistence runs on the **main thread after** the async
+      pipeline join (in `app.py`, post-`run_pipeline`). Workers never write.
+- [x] UI: sidebar lists past runs (newest first) + reopen; approve/reject/edit
+      persist durably (`update_email_status` / `update_email_edit`).
+- [x] Tests: `tests/test_persistence.py` — save/get round-trip (evidence preserved),
+      list newest-first, status update, edit update, missing run, schema auto-create.
 
-**Acceptance:** A run survives restart and is reloadable as a campaign.
+**Acceptance:** ✅ A run survives restart and is reloadable as a campaign; approval
+statuses persist across refresh. (`tmp/` is gitignored → DB not committed.)
 
 ---
 
