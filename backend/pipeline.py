@@ -18,12 +18,14 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from backend.agents import Agents, AgentLike, build_agents
 from backend.approval import DRAFTED
 from backend.config import get_settings
+from backend.cost import CostTracker, MeteringAgent
 from backend.evaluation.deterministic import evaluate_email
 from backend.evaluation.gating import email_is_ready
 from backend.evaluation.judge import ajudge_email, create_judge_agent
 from backend.json_utils import extract_json_or_raise
 from backend.models import Email
 from backend.sources.jsearch import fetch_job_insights
+from backend.text_utils import normalize_company_name
 
 # progress_cb(stage: int, total: int, message: str, detail: str) -> None
 ProgressCb = Optional[Callable[[int, int, str, str], None]]
@@ -74,13 +76,22 @@ def _extract_single(company: Dict[str, str], data: Dict[str, Any], list_key: str
 
 # --- Prompt builders ---
 
-def _company_finder_prompt(target_desc: str, offering_desc: str, max_companies: int) -> str:
-    return (
+def _company_finder_prompt(
+    target_desc: str, offering_desc: str, max_companies: int, exclude: Optional[List[str]] = None
+) -> str:
+    base = (
         f"Find exactly {max_companies} companies that are a strong B2B fit given the user inputs.\n"
         f"Targeting: {target_desc}\n"
         f"Offering: {offering_desc}\n"
         "For each, provide: name, website, why_fit (1-2 lines)."
     )
+    if exclude:
+        base += (
+            "\nExclude these already-contacted companies (do not return any of them): "
+            + ", ".join(exclude[:50])
+            + "."
+        )
+    return base
 
 
 def _contact_finder_prompt(company: Dict[str, str], target_desc: str, offering_desc: str) -> str:
@@ -125,11 +136,58 @@ def _email_writer_prompt(
 # --- Async single-shot stage runners ---
 
 async def _arun_company_finder(
-    agent: AgentLike, target_desc: str, offering_desc: str, max_companies: int
+    agent: AgentLike,
+    target_desc: str,
+    offering_desc: str,
+    max_companies: int,
+    exclude: Optional[List[str]] = None,
 ) -> List[Dict[str, str]]:
-    resp = await agent.arun(_company_finder_prompt(target_desc, offering_desc, max_companies))
+    resp = await agent.arun(_company_finder_prompt(target_desc, offering_desc, max_companies, exclude))
     companies = _parse(resp).get("companies", [])
     return companies[: max(1, min(max_companies, 10))]
+
+
+# Bounded retries to top the company list back up to N after cooldown suppression.
+_MAX_FINDER_ATTEMPTS = 3
+
+
+async def _collect_companies(
+    agent: AgentLike,
+    target_desc: str,
+    offering_desc: str,
+    num_companies: int,
+    suppress: List[str],
+) -> List[Dict[str, str]]:
+    """Find ``num_companies`` companies, excluding suppressed ones, topping back up
+    to N across a few attempts (each excludes suppressed + already-found names).
+
+    Stops early once N is reached or an attempt yields nothing new (not enough
+    fresh companies exist) — bounded so it can't spin or spend unboundedly.
+    """
+    blocked = {normalize_company_name(n) for n in suppress}
+    collected: List[Dict[str, str]] = []
+    seen: set = set()
+    exclude = list(suppress)  # names to tell the finder to avoid
+
+    for _ in range(_MAX_FINDER_ATTEMPTS):
+        need = num_companies - len(collected)
+        if need <= 0:
+            break
+        found = await _arun_company_finder(agent, target_desc, offering_desc, need, exclude=exclude)
+        added = False
+        for c in found:
+            key = normalize_company_name(c.get("name", ""))
+            if not key or key in blocked or key in seen:
+                continue
+            collected.append(c)
+            seen.add(key)
+            exclude.append(c.get("name", ""))
+            added = True
+            if len(collected) >= num_companies:
+                break
+        if not added:  # finder returned nothing new -> not enough fresh companies
+            break
+    return collected[:num_companies]
 
 
 def _repair_email_prompt(email: Dict[str, Any], evidence: List[Dict[str, Any]]) -> str:
@@ -369,6 +427,7 @@ async def arun_pipeline(
     progress_cb: ProgressCb = None,
     include_inferred_contacts: Optional[bool] = None,
     judge_agent: Optional[AgentLike] = None,
+    suppress_companies: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Async 4-stage outreach pipeline. Safe to ``await`` from any event loop
     (FastAPI, async workers, notebooks).
@@ -383,10 +442,19 @@ async def arun_pipeline(
         include_inferred_contacts = settings.include_inferred_contacts
     max_workers = settings.max_workers
 
-    # 1. Companies
+    # Wrap agents so every LLM call's token usage is metered transparently.
+    tracker = CostTracker()
+    agents = Agents(
+        company_finder=MeteringAgent(agents.company_finder, "company_finder", settings.company_finder_model, tracker),
+        contact_finder=MeteringAgent(agents.contact_finder, "contact_finder", settings.contact_finder_model, tracker),
+        researcher=MeteringAgent(agents.researcher, "researcher", settings.research_model, tracker),
+        email_writer=MeteringAgent(agents.email_writer, "email_writer", settings.email_writer_model, tracker),
+    )
+
+    # 1. Companies — exclude cooldown companies and top back up to N with fresh ones.
     _emit(progress_cb, 1, "Finding companies...")
-    companies = await _arun_company_finder(
-        agents.company_finder, target_desc, offering_desc, max_companies=num_companies
+    companies = await _collect_companies(
+        agents.company_finder, target_desc, offering_desc, num_companies, suppress_companies or []
     )
     _emit(progress_cb, 1, "Finding companies...", f"Found {len(companies)} companies")
 
@@ -443,6 +511,7 @@ async def arun_pipeline(
     if active_judge is None and settings.enable_llm_judge:
         active_judge = create_judge_agent()
     if active_judge is not None:
+        active_judge = MeteringAgent(active_judge, "judge", settings.judge_model, tracker)
         evidence_by_company = {
             _norm_name(r.get("name", "")): (r.get("insights") or []) for r in research_data
         }
@@ -489,6 +558,8 @@ async def arun_pipeline(
         "contacts": contacts_data,
         "research": research_data,
         "emails": emails,
+        "cost": tracker.total_cost(),
+        "cost_breakdown": tracker.breakdown(),
     }
 
 

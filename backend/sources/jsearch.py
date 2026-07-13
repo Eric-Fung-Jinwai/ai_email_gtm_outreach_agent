@@ -20,12 +20,9 @@ from typing import Any, Callable, Dict, List, Optional
 
 from backend.config import Settings, get_settings
 from backend.models import Insight
+from backend.text_utils import normalize_company_name as _normalize_company_name
 
 _HOST = "jsearch.p.rapidapi.com"
-_LEGAL_SUFFIXES = {
-    "inc", "incorporated", "llc", "ltd", "limited", "corp", "corporation",
-    "co", "company", "gmbh", "plc", "sa", "ag",
-}
 # A single-token acronym must be at least this long to match via token-subset,
 # so "Go" doesn't match "Go Daddy" while "IBM"/"SAP" still work.
 _MIN_ACRONYM_LEN = 3
@@ -41,12 +38,6 @@ _TECH_TERMS = [
     "salesforce", "hubspot", "sap",
     "machine learning", "llm", "genai", "generative ai", "nlp", "pytorch", "tensorflow",
 ]
-
-
-def _normalize_company_name(name: str) -> str:
-    s = re.sub(r"[^a-z0-9 ]", " ", (name or "").lower())
-    tokens = [t for t in s.split() if t and t not in _LEGAL_SUFFIXES]
-    return " ".join(tokens).strip()
 
 
 def _employer_matches(employer_name: Optional[str], target_name: str) -> bool:
