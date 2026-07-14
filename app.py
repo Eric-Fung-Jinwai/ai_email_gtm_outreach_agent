@@ -5,12 +5,14 @@ import streamlit as st
 from backend import persistence
 from backend.approval import apply_action
 from backend.config import export_provider_env, get_settings
+from backend.observability import configure_logging
 from backend.evaluation.deterministic import evaluate_email
 from backend.evaluation.gating import email_is_ready, ready_after_edit
 from backend.pipeline import run_pipeline
 
 
 def main() -> None:
+    configure_logging()
     st.set_page_config(page_title="GTM B2B Outreach", layout="wide")
 
     # Config comes from .env only — never entered in the UI.
@@ -138,6 +140,12 @@ def _render_results() -> None:
             label += f" ({parts})"
         st.caption(label + "  — prices are estimates; see backend/cost.py")
 
+    timings = results.get("timings")
+    if timings:
+        total = timings.get("total", 0.0)
+        per_stage = ", ".join(f"{k}: {v:.1f}s" for k, v in timings.items() if k != "total")
+        st.caption(f"⏱ Total: {total:.1f}s  ({per_stage})")
+
     st.subheader("Top target companies")
     if companies:
         for idx, c in enumerate(companies, 1):
@@ -209,9 +217,17 @@ def _render_results() -> None:
 def _render_email(i: int, e: dict) -> None:
     ev = e.get("eval") or {}
     badge = "✅" if ev.get("passed") else ("⚠️" if ev else "")
-    with st.expander(f"{badge} {i}. {e.get('company','')} → {e.get('contact','')}"):
+    score = e.get("lead_score")
+    score_tag = f"  ·  ⭐ {score}" if score is not None else ""
+    with st.expander(f"{badge} {i}. {e.get('company','')} → {e.get('contact','')}{score_tag}"):
         st.write(f"Subject: {e.get('subject','')}")
         st.text(e.get("body", ""))
+        bd = e.get("lead_score_breakdown")
+        if bd:
+            st.caption(
+                f"Priority {score} — "
+                + ", ".join(f"{k}: {v}" for k, v in bd.items())
+            )
         failed = [c for c in ev.get("checks", []) if not c.get("passed")]
         if failed:
             st.caption(

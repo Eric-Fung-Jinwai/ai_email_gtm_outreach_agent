@@ -13,12 +13,17 @@ per-stage batching: finer-grained parallelism, per-company cacheability
 
 import asyncio
 import json
-from typing import Any, Callable, Dict, List, Optional, Tuple
+import logging
+import time
+from contextlib import contextmanager
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 from backend.agents import Agents, AgentLike, build_agents
 from backend.approval import DRAFTED
 from backend.config import get_settings
 from backend.cost import CostTracker, MeteringAgent
+from backend.retry import RetryingAgent
+from backend.scoring import lead_score, seniority_score
 from backend.evaluation.deterministic import evaluate_email
 from backend.evaluation.gating import email_is_ready
 from backend.evaluation.judge import ajudge_email, create_judge_agent
@@ -32,10 +37,23 @@ ProgressCb = Optional[Callable[[int, int, str, str], None]]
 
 _TOTAL_STAGES = 4
 
+# Quiet until an entrypoint configures logging (see backend/observability.py).
+logger = logging.getLogger("gtm.pipeline")
+
 
 def _emit(cb: ProgressCb, stage: int, message: str, detail: str = "") -> None:
     if cb is not None:
         cb(stage, _TOTAL_STAGES, message, detail)
+
+
+@contextmanager
+def _stage_timer(timings: Dict[str, float], name: str) -> Iterator[None]:
+    """Record wall-clock seconds for a pipeline stage into ``timings[name]``."""
+    start = time.perf_counter()
+    try:
+        yield
+    finally:
+        timings[name] = round(time.perf_counter() - start, 3)
 
 
 def _parse(resp: Any) -> Dict[str, Any]:
@@ -302,6 +320,41 @@ def _clean_research_for_emails(research_data: List[Dict[str, Any]]) -> List[Dict
     return [r for r in research_data if not r.get("error")]
 
 
+def _score_and_sort_emails(
+    emails: List[Dict[str, Any]],
+    contacts_data: List[Dict[str, Any]],
+    research_data: List[Dict[str, Any]],
+) -> None:
+    """Attach a deterministic ``lead_score`` to each email and sort by priority
+    (highest first). Cross-references contact seniority and evidence strength."""
+    contact_by_key: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    for rec in contacts_data:
+        cnorm = normalize_company_name(rec.get("name", ""))
+        for c in rec.get("contacts", []) or []:
+            contact_by_key[(cnorm, (c.get("full_name", "") or "").strip().lower())] = c
+
+    insights_by_company: Dict[str, List[Any]] = {
+        normalize_company_name(r.get("name", "")): (r.get("insights") or []) for r in research_data
+    }
+
+    for e in emails:
+        cnorm = normalize_company_name(e.get("company", ""))
+        cinfo = contact_by_key.get((cnorm, (e.get("contact", "") or "").strip().lower()), {})
+        insights = insights_by_company.get(cnorm, [])
+        has_job = any(isinstance(i, dict) and i.get("source_type") == "job_posting" for i in insights)
+        scored = lead_score(
+            seniority=seniority_score(cinfo.get("title", "")),
+            insight_count=len(insights),
+            has_job_evidence=has_job,
+            ready=bool((e.get("eval") or {}).get("ready")),
+            inferred=bool(cinfo.get("inferred")),
+        )
+        e["lead_score"] = scored["score"]
+        e["lead_score_breakdown"] = scored["breakdown"]
+
+    emails.sort(key=lambda e: e.get("lead_score", 0), reverse=True)
+
+
 def _coerce_email(item: Any) -> Dict[str, Any]:
     """Coerce one raw email item from the model into a safe dict.
 
@@ -442,30 +495,47 @@ async def arun_pipeline(
         include_inferred_contacts = settings.include_inferred_contacts
     max_workers = settings.max_workers
 
-    # Wrap agents so every LLM call's token usage is metered transparently.
+    # Wrap agents: retry transient failures closest to the real agent, then meter
+    # token usage of the (final) successful call transparently.
     tracker = CostTracker()
+
+    def _wrap(inner: AgentLike, stage: str, model_id: str) -> AgentLike:
+        retried = RetryingAgent(
+            inner, max_attempts=settings.api_max_retries, wait_multiplier=settings.api_retry_wait
+        )
+        return MeteringAgent(retried, stage, model_id, tracker)
+
     agents = Agents(
-        company_finder=MeteringAgent(agents.company_finder, "company_finder", settings.company_finder_model, tracker),
-        contact_finder=MeteringAgent(agents.contact_finder, "contact_finder", settings.contact_finder_model, tracker),
-        researcher=MeteringAgent(agents.researcher, "researcher", settings.research_model, tracker),
-        email_writer=MeteringAgent(agents.email_writer, "email_writer", settings.email_writer_model, tracker),
+        company_finder=_wrap(agents.company_finder, "company_finder", settings.company_finder_model),
+        contact_finder=_wrap(agents.contact_finder, "contact_finder", settings.contact_finder_model),
+        researcher=_wrap(agents.researcher, "researcher", settings.research_model),
+        email_writer=_wrap(agents.email_writer, "email_writer", settings.email_writer_model),
     )
+
+    timings: Dict[str, float] = {}
+    _t_total = time.perf_counter()
 
     # 1. Companies — exclude cooldown companies and top back up to N with fresh ones.
     _emit(progress_cb, 1, "Finding companies...")
-    companies = await _collect_companies(
-        agents.company_finder, target_desc, offering_desc, num_companies, suppress_companies or []
-    )
+    with _stage_timer(timings, "companies"):
+        companies = await _collect_companies(
+            agents.company_finder, target_desc, offering_desc, num_companies, suppress_companies or []
+        )
+    logger.info("stage=companies duration=%.3fs found=%d", timings["companies"], len(companies))
     _emit(progress_cb, 1, "Finding companies...", f"Found {len(companies)} companies")
 
     # 2 + 3. Contacts and research fanned out per company, run concurrently.
     _emit(progress_cb, 2, "Finding contacts + researching per company (parallel)...")
-    if companies:
-        contacts_data, research_data = await _fanout_contacts_and_research(
-            agents, companies, target_desc, offering_desc, max_workers
-        )
-    else:
-        contacts_data, research_data = [], []
+    with _stage_timer(timings, "contacts_research"):
+        if companies:
+            contacts_data, research_data = await _fanout_contacts_and_research(
+                agents, companies, target_desc, offering_desc, max_workers
+            )
+        else:
+            contacts_data, research_data = [], []
+    logger.info(
+        "stage=contacts_research duration=%.3fs companies=%d", timings["contacts_research"], len(companies)
+    )
     _emit(progress_cb, 2, "Finding contacts...", f"Collected contacts for {len(contacts_data)} companies")
     _emit(progress_cb, 3, "Researching insights...", f"Compiled research for {len(research_data)} companies")
 
@@ -477,18 +547,23 @@ async def arun_pipeline(
     research_for_writer = [r for r in clean_research if r.get("insights")]
     emailable_contacts = _emailable_contacts(usable_contacts, research_for_writer)
     _emit(progress_cb, 4, "Writing personalized emails...")
-    if emailable_contacts:
-        emails = await _arun_email_writer(
-            agents.email_writer,
-            emailable_contacts,
-            research_for_writer,
-            offering_desc,
-            sender_name or "Sales Team",
-            sender_company or "Our Company",
-            calendar_link or None,
-        )
-    else:
-        emails = []
+    with _stage_timer(timings, "emails"):
+        if emailable_contacts:
+            emails = await _arun_email_writer(
+                agents.email_writer,
+                emailable_contacts,
+                research_for_writer,
+                offering_desc,
+                sender_name or "Sales Team",
+                sender_company or "Our Company",
+                calendar_link or None,
+            )
+        else:
+            emails = []
+    logger.info("stage=emails duration=%.3fs generated=%d", timings["emails"], len(emails))
+
+    # Evaluation (deterministic gate + judge + repair) starts here.
+    _t_eval = time.perf_counter()
 
     # Coerce any malformed model output, then attach the deterministic quality
     # gate (free, no model calls) to each email.
@@ -511,7 +586,7 @@ async def arun_pipeline(
     if active_judge is None and settings.enable_llm_judge:
         active_judge = create_judge_agent()
     if active_judge is not None:
-        active_judge = MeteringAgent(active_judge, "judge", settings.judge_model, tracker)
+        active_judge = _wrap(active_judge, "judge", settings.judge_model)
         evidence_by_company = {
             _norm_name(r.get("name", "")): (r.get("insights") or []) for r in research_data
         }
@@ -547,11 +622,22 @@ async def arun_pipeline(
     # Overall readiness = deterministic pass AND (no judge ran OR judge faithful).
     for e in emails:
         e["eval"]["ready"] = email_is_ready(e["eval"])
+    timings["evaluation"] = round(time.perf_counter() - _t_eval, 3)
 
-    # Workflow metadata for human-in-the-loop approval (Phase 5).
+    # Deterministic lead scoring → sort by priority (highest-value prospects first).
+    _score_and_sort_emails(emails, contacts_data, research_data)
+
+    # Workflow metadata for human-in-the-loop approval (Phase 5). Ids follow the
+    # sorted (priority) order.
     for i, e in enumerate(emails):
         e["id"] = f"email-{i}"
         e.setdefault("status", DRAFTED)
+
+    timings["total"] = round(time.perf_counter() - _t_total, 3)
+    logger.info(
+        "pipeline complete total=%.3fs companies=%d emails=%d cost=%.4f",
+        timings["total"], len(companies), len(emails), tracker.total_cost(),
+    )
 
     return {
         "companies": companies,
@@ -560,6 +646,7 @@ async def arun_pipeline(
         "emails": emails,
         "cost": tracker.total_cost(),
         "cost_breakdown": tracker.breakdown(),
+        "timings": timings,
     }
 
 
