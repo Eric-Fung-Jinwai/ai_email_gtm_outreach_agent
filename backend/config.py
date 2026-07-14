@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     jsearch_country: str = "us"
     jsearch_max_jobs: int = 5
     jsearch_max_concurrency: int = 2  # own bound so slow JSearch can't throttle LLM work
-    redis_url: str = "redis://localhost:6379/0"  # Phase 8: cache
+    redis_url: str = "redis://localhost:6379/0"  # reserved for future multi-user caching (not wired)
     # Phase 6: separate application DB for campaign history (NOT the agno session DB).
     app_db_path: str = "tmp/campaigns.db"
     # Don't re-contact a company we generated outreach for within this many days.
@@ -42,10 +42,15 @@ class Settings(BaseSettings):
     research_model: str = "gpt-5.4-nano"
     email_writer_model: str = "gpt-5.4-nano"
 
-    # --- Concurrency / cache tuning (used in later phases) ---
+    # --- Concurrency / retries ---
     max_workers: int = 6
+    api_max_retries: int = 3  # retry attempts for transient agent/API errors
+    api_retry_wait: float = 0.5  # exponential backoff multiplier (seconds)
     cache_ttl_research: int = 604800  # 7 days
     cache_ttl_contacts: int = 259200  # 3 days
+
+    # --- Observability ---
+    log_level: str = "INFO"
 
     # --- Behavior / safety ---
     # Agno agent debug logging can print prompts/responses (company targets,

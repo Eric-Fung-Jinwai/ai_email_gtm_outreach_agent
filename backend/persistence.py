@@ -56,6 +56,7 @@ _EXPECTED_COLUMNS = {
         "run_id": "INTEGER", "email_id": "TEXT", "company": "TEXT", "contact": "TEXT",
         "subject": "TEXT", "body": "TEXT", "status": "TEXT", "ready": "INTEGER",
         "faithful": "INTEGER", "approved_override": "INTEGER DEFAULT 0", "eval_json": "TEXT",
+        "lead_score": "INTEGER", "lead_score_breakdown_json": "TEXT",
     },
 }
 
@@ -100,6 +101,8 @@ def init_db(db_path: Optional[str] = None) -> None:
                 faithful INTEGER,
                 approved_override INTEGER DEFAULT 0,
                 eval_json TEXT,
+                lead_score INTEGER,
+                lead_score_breakdown_json TEXT,
                 UNIQUE(run_id, email_id)
             );
             """
@@ -115,6 +118,7 @@ def save_run(result: Dict[str, Any], inputs: Dict[str, Any], db_path: Optional[s
         "contacts": result.get("contacts", []),
         "research": result.get("research", []),
         "calendar_link": result.get("calendar_link"),
+        "timings": result.get("timings"),  # per-stage observability (immutable)
     }
     with _connect(db_path) as conn:
         cur = conn.execute(
@@ -141,8 +145,8 @@ def save_run(result: Dict[str, Any], inputs: Dict[str, Any], db_path: Optional[s
             faithful = (ev.get("judge") or {}).get("faithful")
             conn.execute(
                 "INSERT INTO emails (run_id, email_id, company, contact, subject, body, "
-                "status, ready, faithful, approved_override, eval_json) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                "status, ready, faithful, approved_override, eval_json, lead_score, "
+                "lead_score_breakdown_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     run_id,
                     e.get("id"),
@@ -155,6 +159,8 @@ def save_run(result: Dict[str, Any], inputs: Dict[str, Any], db_path: Optional[s
                     None if faithful is None else int(faithful),
                     int(bool(e.get("approved_override"))),
                     json.dumps(ev),
+                    e.get("lead_score"),
+                    json.dumps(e.get("lead_score_breakdown") or {}),
                 ),
             )
     return run_id
@@ -193,6 +199,10 @@ def get_run(run_id: int, db_path: Optional[str] = None) -> Optional[Dict[str, An
                     "status": e["status"],
                     "approved_override": bool(e["approved_override"]),
                     "eval": json.loads(e["eval_json"]) if e["eval_json"] else {},
+                    "lead_score": e["lead_score"],
+                    "lead_score_breakdown": json.loads(e["lead_score_breakdown_json"])
+                    if e["lead_score_breakdown_json"]
+                    else {},
                 }
             )
     return {
@@ -201,6 +211,7 @@ def get_run(run_id: int, db_path: Optional[str] = None) -> Optional[Dict[str, An
         "research": snapshot.get("research", []),
         "emails": emails,
         "calendar_link": snapshot.get("calendar_link"),
+        "timings": snapshot.get("timings"),
         "cost": run["cost"],
         "cost_breakdown": json.loads(run["cost_breakdown_json"]) if run["cost_breakdown_json"] else {},
         "run_id": run_id,

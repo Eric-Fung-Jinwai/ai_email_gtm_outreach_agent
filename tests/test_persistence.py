@@ -91,6 +91,27 @@ def test_get_missing_run_returns_none(tmp_path):
     assert get_run(999, db_path=db) is None
 
 
+def test_lead_score_persisted(tmp_path):
+    db = _db(tmp_path)
+    result = _result()
+    result["emails"][0]["lead_score"] = 12
+    result["emails"][0]["lead_score_breakdown"] = {
+        "seniority": 10, "evidence": 1, "ready": 0, "verified_email": 1
+    }
+    rid = save_run(result, _inputs(), db_path=db)
+    e = get_run(rid, db_path=db)["emails"][0]
+    assert e["lead_score"] == 12
+    assert e["lead_score_breakdown"]["seniority"] == 10  # breakdown survives reopen
+
+
+def test_timings_persisted(tmp_path):
+    db = _db(tmp_path)
+    result = _result()
+    result["timings"] = {"companies": 0.8, "total": 3.2}
+    rid = save_run(result, _inputs(), db_path=db)
+    assert get_run(rid, db_path=db)["timings"] == {"companies": 0.8, "total": 3.2}
+
+
 def test_cost_and_breakdown_persisted(tmp_path):
     db = _db(tmp_path)
     result = _result()

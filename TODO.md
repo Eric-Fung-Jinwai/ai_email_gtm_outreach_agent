@@ -237,7 +237,7 @@ statuses persist across refresh. (`tmp/` is gitignored → DB not committed.)
 
 ---
 
-## Phase 7 — Concurrency  ⚠️ GATED on Phase 3
+## Phase 7 — Concurrency  ✅ DONE (was gated on Phase 3)
 
 Low-risk *once agents are stateless* — the danger was always the shared memory.
 
@@ -249,9 +249,13 @@ Low-risk *once agents are stateless* — the danger was always the shared memory
 - [x] Deterministic result ordering (gather preserves input company order).
 - [x] Partial-failure isolation: a per-company exception → error record in that
       company's slot, batch continues.
-- [ ] Persistence writes happen on the main thread only (see Phase 6).
-- [ ] `tenacity` retry/backoff on transient/rate-limit errors.
-- [x] Tests: ordering, partial-failure, worker-bound (semaphore serialization).
+- [x] Persistence writes happen on the main thread only (done in Phase 6).
+- [x] `tenacity` retry/backoff on transient/rate-limit errors: `RetryingAgent`
+      (`backend/retry.py`) wraps every agent + judge, retrying ONLY transient errors
+      (429/408/409/5xx by status, or rate-limit/timeout/connection by class name),
+      never deterministic ones (400/401/JSON). `API_MAX_RETRIES`/`API_RETRY_WAIT`.
+- [x] Tests: ordering, partial-failure, worker-bound (semaphore serialization);
+      transient-retry (predicate, backoff wrapper, pipeline end-to-end retry).
 - [x] **Event-loop safe:** async-first `arun_pipeline()` + sync `run_pipeline()`
       wrapper, so the backend works under FastAPI/notebooks/async workers.
 - [x] **Errored/empty records filtered** out of the email stage
@@ -271,17 +275,56 @@ failure yields partial result.
 
 ---
 
-## Phase 8 — Redis caching
+## Phase 8 — Redis caching  ⛔ DESCOPED (deliberate)
 
-- [ ] Add `redis`; `REDIS_URL` in config; `docker-compose.yml` (`redis:7`).
-- [ ] `backend/cache.py`: `normalize_domain(website)`, `get_json/set_json(ttl)`,
-      **graceful no-op on `ConnectionError`** (never crash the pipeline).
-- [ ] Cache-aside keyed by **domain**: `gtm:research:{domain}` (~7d),
-      `gtm:contacts:{domain}` (~3d). Surface hit/miss via `progress_cb`.
-- [ ] Report cache cost payoff (ties to Phase 9): "cache cut per-run cost by X%".
-- [ ] Tests: key normalization (exhaustive), hit/miss, no-op when Redis down.
+**Decision:** not building a Redis cache. Rationale:
 
-**Acceptance:** Overlapping company set skips Exa+LLM for cached domains.
+- **Cooldown suppression (Phase 6) already removes the repeat-work path** — companies
+  contacted in the last `CONTACT_COOLDOWN_DAYS` are excluded *before* research/contacts/
+  JSearch, so there's little left for a cross-run cache to serve.
+- **Single-user, free-tier:** no cross-user cache hits; within a run each company is
+  fetched once already (no intra-run duplication).
+- **Infra cost > payoff:** Redis means a server + docker-compose + connection +
+  degradation handling + tests, for marginal gain. Declining it is the stronger call.
+- If JSearch quota ever bites, a lightweight **SQLite/in-process TTL cache** (no new
+  infra) covers the one real case — revisit only if needed.
+
+**Revisit when → multi-user.** Cross-user caching (company researched for user A reused
+for user B) becomes genuinely worth it there; that's a separate future effort, and the
+`REDIS_URL` / `CACHE_TTL_*` config knobs are left in place as forward-looking hooks.
+
+---
+
+## Future — Multi-user (NOT started; captured so single-user assumptions are explicit)
+
+Goal noted for later. **Do not build ahead of need (YAGNI).** This is the map so the
+retrofit isn't a surprise. Nothing below is broken today.
+
+**Already multi-user-friendly (keep it that way):**
+- Stateless agents + event-loop-safe `arun_pipeline` (FastAPI-ready).
+- All DB access funnels through `backend/persistence.py` → user-scoping is a contained change.
+- Global run ids + `(run_id, email_id)` keys → no cross-user id collisions.
+- Additive schema migration → adding `user_id` is a one-liner, not a data migration.
+- Per-stage cost tracking → per-user cost is a `GROUP BY` later.
+
+**Single-user assumptions to unwind (all deferrable):**
+- [ ] No identity/auth — biggest piece; add auth + per-request user identity.
+- [ ] Data not user-scoped — add `user_id` to `runs`/`emails`; filter `list_runs`,
+      `get_run`, `update_email_*`, `recently_contacted_companies`.
+- [ ] SQLite single-writer — fine now; move to Postgres for real concurrent traffic
+      (swap is contained thanks to the persistence abstraction).
+- [ ] Global API keys + unattributed cost — decide shared-vs-per-user (below).
+
+**Product decisions multi-user forces (decide before building):**
+- [ ] **Cooldown scope:** per-user vs **organization-wide** (team dedup — two reps
+      shouldn't both email the same prospect). Depends on whether "multi-user" =
+      one company's team, or many independent users. `recently_contacted_companies`
+      is global today.
+- [ ] **Keys/billing:** shared keys with per-user cost attribution, or per-user keys.
+
+**Discipline to hold now (cheap, keeps the door open):** keep ALL persistence in
+`backend/persistence.py` — no raw `sqlite3` elsewhere — so user-scoping stays a
+single-file change.
 
 ---
 
@@ -307,21 +350,33 @@ Strong, underused agentic-work signal.
 
 ---
 
-## Phase 10 — Observability & docs
+## Phase 10 — Observability & docs  ✅ DONE (observability); docs N/A
 
-- [ ] Replace `print`/`debug_mode` with `logging`; per-stage timing.
-- [ ] Update `README.md`: structure, `.env` setup, Redis/docker, eval/golden-set,
-      run command (`streamlit run app.py`). Document architecture.
+- [x] Structured `logging` (`backend/observability.py`): `configure_logging`
+      (idempotent, `LOG_LEVEL`) called by the app; library modules use
+      `logging.getLogger` and stay quiet until an entrypoint configures — so tests
+      and imports emit no noise. `debug_mode` already env-gated (`DEBUG_AGENTS`).
+- [x] **Per-stage timing:** pipeline records `timings` (companies, contacts_research,
+      emails, evaluation, total); logged per stage + surfaced in the UI (⏱ caption).
+- [x] Tests: logger factory, configure-idempotent; pipeline emits timings.
+- [~] Docs / `README.md`: **intentionally skipped** — README was deleted on purpose.
+      `.env.example` documents every setting; TODO.md is the living architecture doc.
 
 ---
 
 ## Trimmed / deferred (do NOT let these eat the spine)
 
-- [ ] **Lead scoring — trimmed to deterministic sort only.** Seniority from title
-      keywords + industry match from category. Do NOT rebuild the LLM judge here;
-      "personalization depth" already lives in eval coverage (Phase 4c).
-- [ ] **Export formats — last, cheap.** CSV/JSON + "HubSpot-style CSV". Nearly
-      free once typed models + persistence exist. Product-sense polish, not a headline.
+- [x] **Lead scoring — deterministic sort (`backend/scoring.py`).** `seniority_score`
+      (word-boundary title keywords, VP checked before C-level, no "cto"-in-"director"
+      bug) + `lead_score` (seniority×2 + evidence[insight count capped + job-posting
+      bonus] + readiness + verified-email). Pipeline attaches `lead_score` +
+      breakdown to each email and sorts by priority; UI shows ⭐ score + breakdown.
+      No LLM (personalization depth already lives in the Phase 4c judge). Industry
+      match skipped — companies carry no structured category. Tested.
+- [x] **Export formats — SKIPPED (not needed).** CSV/JSON/HubSpot export was
+      optional polish; deliberately not building it. Data already lives durably in
+      the app DB and is reopenable in-app, which covers the current need. Revisit if
+      a real "hand off to CRM / share outside the app" workflow appears.
 
 ---
 

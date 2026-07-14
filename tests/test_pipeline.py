@@ -43,8 +43,10 @@ def test_pipeline_survives_malformed_email_item():
         calendar_link=None, num_companies=1, agents=agents,
     )
     assert len(result["emails"]) == 2
-    assert result["emails"][0].get("malformed") is True
-    assert "eval" in result["emails"][0] and result["emails"][0]["eval"]["passed"] is False
+    # Emails are lead-score sorted, so find the malformed one by flag, not index.
+    malformed = [e for e in result["emails"] if e.get("malformed")]
+    assert len(malformed) == 1
+    assert "eval" in malformed[0] and malformed[0]["eval"]["passed"] is False
 
 
 class _CannedAgent:
@@ -482,6 +484,77 @@ def test_pipeline_tops_up_to_n_when_some_suppressed():
     assert len(names) == len(set(names))  # no duplicates across attempts
 
 
+def test_emails_sorted_by_lead_score():
+    """A C-level contact should outrank an IC contact and appear first."""
+
+    def contacts(prompt):
+        if "Globex" in prompt:
+            return json.dumps({"name": "Globex", "contacts": [
+                {"full_name": "G Eng", "title": "Software Engineer", "email": "g@globex.com", "inferred": False}]})
+        return json.dumps({"name": "Acme", "contacts": [
+            {"full_name": "A Boss", "title": "Chief Executive Officer", "email": "a@acme.com", "inferred": False}]})
+
+    def research(prompt):
+        name = "Globex" if "Globex" in prompt else "Acme"
+        return json.dumps({"name": name, "insights": ["an insight"]})
+
+    emails = [
+        {"company": "Globex", "contact": "G Eng", "subject": "s", "body": "b"},
+        {"company": "Acme", "contact": "A Boss", "subject": "s", "body": "b"},
+    ]
+    agents = Agents(
+        company_finder=_CannedAgent(json.dumps({"companies": [{"name": "Acme"}, {"name": "Globex"}]})),
+        contact_finder=_CannedAgent(contacts),
+        researcher=_CannedAgent(research),
+        email_writer=_CannedAgent(json.dumps({"emails": emails})),
+    )
+    result = run_pipeline(
+        target_desc="t", offering_desc="o", sender_name="S", sender_company="C",
+        calendar_link=None, num_companies=2, agents=agents,
+    )
+    ordered = [e["company"] for e in result["emails"]]
+    assert ordered == ["Acme", "Globex"]  # CEO outranks Engineer
+    assert result["emails"][0]["lead_score"] > result["emails"][1]["lead_score"]
+    assert result["emails"][0]["id"] == "email-0"  # ids follow priority order
+
+
+def test_pipeline_retries_transient_agent_error(monkeypatch):
+    """A transient error from an agent is retried inside the pipeline."""
+    from backend.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "api_retry_wait", 0.0)  # no backoff delay in test
+
+    class _RateLimit(Exception):  # transient by class name
+        pass
+
+    class _FlakyFinder:
+        def __init__(self):
+            self.calls = 0
+
+        async def arun(self, prompt):
+            self.calls += 1
+            if self.calls == 1:
+                raise _RateLimit()
+            return type("R", (), {"content": json.dumps({"companies": [{"name": "Acme"}]})})()
+
+        def run(self, prompt):
+            return type("R", (), {"content": "{}"})()
+
+    finder = _FlakyFinder()
+    agents = Agents(
+        company_finder=finder,
+        contact_finder=_CannedAgent(json.dumps({"name": "Acme", "contacts": []})),
+        researcher=_CannedAgent(json.dumps({"name": "Acme", "insights": []})),
+        email_writer=_CannedAgent(json.dumps({"emails": []})),
+    )
+    result = run_pipeline(
+        target_desc="t", offering_desc="o", sender_name="S", sender_company="C",
+        calendar_link=None, num_companies=1, agents=agents,
+    )
+    assert finder.calls == 2  # retried once after the transient failure
+    assert [c["name"] for c in result["companies"]] == ["Acme"]
+
+
 def test_fanout_isolates_per_company_failure():
     """One company raising must not sink the batch; it yields an error record."""
 
@@ -540,6 +613,10 @@ def test_run_pipeline_offline_with_mocked_agents(fake_agents):
     # Cost tracking (Phase 9): present; 0.0 here since the fakes report no usage.
     assert isinstance(result["cost"], float)
     assert "cost_breakdown" in result
+    # Observability (Phase 10): per-stage timings + total.
+    timings = result["timings"]
+    assert {"companies", "contacts_research", "emails", "evaluation", "total"} <= set(timings)
+    assert all(isinstance(v, float) for v in timings.values())
 
 
 def test_pipeline_captures_cost_from_token_usage():
