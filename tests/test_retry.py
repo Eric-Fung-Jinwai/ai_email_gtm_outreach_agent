@@ -81,3 +81,22 @@ def test_sync_run_retries_too():
     agent = _agent(inner, max_attempts=2)
     assert agent.run("x").content == "ok"
     assert inner.calls == 2
+
+
+class _AgnoStyleInner:
+    """Mimics agno's real Agent.arun: a *sync* method that RETURNS a coroutine
+    (not itself a coroutine function). Fakes elsewhere use ``async def``, which
+    hid the mismatch that broke the live path."""
+
+    def arun(self, prompt):  # note: NOT async
+        async def _coro():
+            return type("R", (), {"content": "ok"})()
+        return _coro()
+
+
+def test_arun_resolves_agno_style_sync_returning_coroutine():
+    # Regression: previously the un-awaited coroutine leaked through tenacity and
+    # the caller got a coroutine object instead of a response.
+    resp = asyncio.run(_agent(_AgnoStyleInner()).arun("x"))
+    assert getattr(resp, "content", None) == "ok"  # a real response, not a coroutine
+    assert not asyncio.iscoroutine(resp)

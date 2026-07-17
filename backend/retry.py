@@ -60,7 +60,15 @@ class RetryingAgent:
         )
 
     async def arun(self, prompt: str) -> Any:
-        return await AsyncRetrying(**self._policy())(self._inner.arun, prompt)
+        # NOTE: agno's ``Agent.arun`` is a *sync* method that RETURNS a coroutine
+        # (it is not itself a coroutine function). tenacity's ``AsyncRetrying``
+        # expects a coroutine function and would hand back the un-awaited coroutine.
+        # Wrap the call in a real coroutine function and await the awaitable here, so
+        # retries see the resolved result. Works for both agno and async-def fakes.
+        async def _call() -> Any:
+            return await self._inner.arun(prompt)
+
+        return await AsyncRetrying(**self._policy())(_call)
 
     def run(self, prompt: str) -> Any:
         return Retrying(**self._policy())(self._inner.run, prompt)
