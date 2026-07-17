@@ -33,13 +33,24 @@ def seniority_score(title: str) -> int:
 
 
 def lead_score(
-    *, seniority: int, insight_count: int, has_job_evidence: bool, ready: bool, inferred: bool
+    *,
+    seniority: int,
+    insight_count: int,
+    has_job_evidence: bool,
+    ready: bool,
+    inferred: bool,
+    domain_mismatch: bool = False,
 ) -> Dict[str, Any]:
-    """Composite priority score with an explainable per-signal breakdown."""
+    """Composite priority score with an explainable per-signal breakdown.
+
+    ``domain_mismatch`` (contact email domain ≠ company domain) is a soft penalty,
+    not a rejection — it just lowers priority.
+    """
     breakdown = {
         "seniority": seniority * 2,  # weight the decision-maker signal
         "evidence": min(insight_count, 4) + (3 if has_job_evidence else 0),
         "ready": 3 if ready else 0,
         "verified_email": 0 if inferred else 1,
+        "domain_mismatch": -2 if domain_mismatch else 0,
     }
     return {"score": sum(breakdown.values()), "breakdown": breakdown}

@@ -22,7 +22,18 @@ def test_lead_score_rewards_seniority_evidence_and_readiness():
     assert strong["breakdown"]["evidence"] == 7  # min(4,4) + 3 for job evidence
     assert strong["breakdown"]["ready"] == 3
     assert strong["breakdown"]["verified_email"] == 1
-    assert weak["breakdown"] == {"seniority": 2, "evidence": 0, "ready": 0, "verified_email": 0}
+    assert weak["breakdown"] == {
+        "seniority": 2, "evidence": 0, "ready": 0, "verified_email": 0, "domain_mismatch": 0
+    }
+
+
+def test_domain_mismatch_penalizes_score():
+    base = lead_score(seniority=3, insight_count=1, has_job_evidence=False, ready=True, inferred=False)
+    penalized = lead_score(
+        seniority=3, insight_count=1, has_job_evidence=False, ready=True, inferred=False, domain_mismatch=True
+    )
+    assert penalized["score"] == base["score"] - 2
+    assert penalized["breakdown"]["domain_mismatch"] == -2
 
 
 def test_insight_count_is_capped():

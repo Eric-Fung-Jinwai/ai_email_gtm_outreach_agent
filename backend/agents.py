@@ -9,9 +9,6 @@ pipeline) never requires ``agno`` to be installed; only the real-agent path does
 
 from dataclasses import dataclass
 from typing import Any, Optional, Protocol
-from agno.agent import Agent
-from agno.models.openai import OpenAIChat
-from agno.tools.exa import ExaTools
 
 from backend.config import export_provider_env, get_settings
 
@@ -45,8 +42,20 @@ def get_email_style_instruction(style_key: str) -> str:
     return styles.get(style_key, styles["Professional"])
 
 
+def _agno():
+    """Import agno lazily so importing this module (and the pipeline) never
+    requires agno to be installed — only the real-agent path does. Keeps the
+    offline test harness import-clean."""
+    from agno.agent import Agent
+    from agno.models.openai import OpenAIChat
+    from agno.tools.exa import ExaTools
+
+    return Agent, OpenAIChat, ExaTools
+
+
 def create_company_finder_agent(model_id: Optional[str] = None) -> Any:
     # Stateless: independent one-shot task, no shared Agno memory / session DB.
+    Agent, OpenAIChat, ExaTools = _agno()
     return Agent(
         model=OpenAIChat(id=model_id or get_settings().company_finder_model),
         tools=[ExaTools(category="company")],
@@ -62,6 +71,7 @@ def create_company_finder_agent(model_id: Optional[str] = None) -> Any:
 def create_contact_finder_agent(model_id: Optional[str] = None) -> Any:
     # Stateless: independent one-shot task, run concurrently with the researcher.
     # No db/history/memory -> no shared-SQLite contention under asyncio.gather.
+    Agent, OpenAIChat, ExaTools = _agno()
     return Agent(
         model=OpenAIChat(id=model_id or get_settings().contact_finder_model),
         tools=[ExaTools()],
@@ -79,6 +89,7 @@ def create_contact_finder_agent(model_id: Optional[str] = None) -> Any:
 def create_research_agent(model_id: Optional[str] = None) -> Any:
     # Stateless: independent one-shot task, run concurrently with the contact finder.
     # No db/history/memory -> no shared-SQLite contention under asyncio.gather.
+    Agent, OpenAIChat, ExaTools = _agno()
     return Agent(
         model=OpenAIChat(id=model_id or get_settings().research_model),
         tools=[ExaTools()],
@@ -96,6 +107,7 @@ def create_research_agent(model_id: Optional[str] = None) -> Any:
 
 def create_email_writer_agent(style_key: str = "Professional", model_id: Optional[str] = None) -> Any:
     # Stateless: independent one-shot task, no shared Agno memory / session DB.
+    Agent, OpenAIChat, ExaTools = _agno()
     return Agent(
         model=OpenAIChat(id=model_id or get_settings().email_writer_model),
         tools=[],

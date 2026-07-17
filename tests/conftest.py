@@ -4,6 +4,14 @@
 and returns canned JSON, so the whole pipeline runs offline with zero API calls.
 """
 
+# ENVIRONMENT now defaults to "production" (secure-by-default), which would make
+# the web app reject the default session secret and mark session cookies Secure
+# (unusable over http in TestClient). Tests are local development; pin that BEFORE
+# any backend.config.Settings is instantiated/cached.
+import os
+
+os.environ.setdefault("ENVIRONMENT", "development")
+
 import json
 
 import pytest

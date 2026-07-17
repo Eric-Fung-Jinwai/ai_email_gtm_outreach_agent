@@ -10,6 +10,8 @@ def email_is_ready(eval_result: Dict[str, Any]) -> bool:
     """
     if not eval_result.get("passed"):
         return False
+    if eval_result.get("binding_error"):  # draft not bound to an approved contact
+        return False
     judge = eval_result.get("judge")
     if judge is None:
         return True
