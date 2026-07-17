@@ -20,6 +20,11 @@ def main() -> None:
     export_provider_env(settings)
     missing_keys = settings.missing_required_keys()
 
+    # Persistence is multi-user now; the single-user Streamlit app owns its data as
+    # the deterministic LOCAL_USER. Resolve once and stash for the helper callbacks.
+    user_id = persistence.get_or_create_local_user()
+    st.session_state["user_id"] = user_id
+
     # Sidebar: read-only key status
     st.sidebar.header("API Configuration")
     st.sidebar.write(f"OpenAI key: {'✅ loaded' if settings.has_openai_key else '❌ missing'}")
@@ -70,11 +75,19 @@ def main() -> None:
                 if detail:
                     details.write(detail)
 
+            # Drop any prior run_id BEFORE starting a new run, so a persistence
+            # failure can't apply later approvals/edits to the previous campaign.
+            st.session_state.pop("run_id", None)
+            st.session_state.pop("gtm_results", None)
+
             # Suppress companies contacted within the cooldown window (from history).
             suppress = []
             if settings.enable_contact_suppression:
+                scope_user = user_id if settings.cooldown_scope == "user" else None
                 try:
-                    suppress = persistence.recently_contacted_companies(settings.contact_cooldown_days)
+                    suppress = persistence.recently_contacted_companies(
+                        settings.contact_cooldown_days, user_id=scope_user
+                    )
                 except Exception:
                     suppress = []
                 if suppress:
@@ -108,6 +121,7 @@ def main() -> None:
                             "num_companies": int(num_companies),
                             "email_style": email_style,
                         },
+                        user_id=user_id,
                     )
                     st.session_state["run_id"] = run_id
                 except Exception as persist_err:
@@ -271,8 +285,9 @@ _STATUS_BADGE = {"drafted": "📝", "approved": "✅", "rejected": "🚫", "edit
 
 def _past_campaigns_sidebar() -> None:
     st.sidebar.header("Past campaigns")
+    user_id = st.session_state.get("user_id")
     try:
-        runs = persistence.list_runs()
+        runs = persistence.list_runs(user_id=user_id) if user_id is not None else []
     except Exception:
         runs = []
     if not runs:
@@ -284,21 +299,11 @@ def _past_campaigns_sidebar() -> None:
     }
     choice = st.sidebar.selectbox("Reopen a campaign", ["(current)"] + list(labels.keys()))
     if choice != "(current)" and st.sidebar.button("Load campaign"):
-        data = persistence.get_run(labels[choice])
+        data = persistence.get_run(labels[choice], user_id=user_id) if user_id is not None else None
         if data:
             st.session_state["gtm_results"] = data
             st.session_state["run_id"] = data["run_id"]
             st.rerun()
-
-
-def _persist_status(e: dict) -> None:
-    run_id = st.session_state.get("run_id")
-    if run_id is None:
-        return
-    try:
-        persistence.update_email_status(run_id, e.get("id"), e.get("status"), e.get("approved_override", False))
-    except Exception as ex:  # surface it — don't let the user think it saved
-        st.warning(f"Status change was not saved to history: {ex}")
 
 
 def _persist_edit(e: dict) -> None:
@@ -307,21 +312,33 @@ def _persist_edit(e: dict) -> None:
         return
     try:
         persistence.update_email_edit(
-            run_id, e.get("id"), e.get("subject", ""), e.get("body", ""), e.get("eval") or {}, e.get("status", "edited")
+            run_id, e.get("id"), e.get("subject", ""), e.get("body", ""),
+            e.get("eval") or {}, e.get("status", "edited"),
+            user_id=st.session_state.get("user_id"),
         )
     except Exception as ex:
         st.warning(f"Edit was not saved to history: {ex}")
 
 
-def _apply_action(e: dict, action: str) -> bool:
-    """Apply a status transition. Returns True on success; on an illegal
-    transition it surfaces a warning and returns False (caller skips rerun so
-    the warning stays visible)."""
+def _transition(e: dict, action: str) -> bool:
+    """Approve/reject via the enforced service command (persists + validates the
+    state machine). Falls back to a local transition if the run isn't persisted."""
+    run_id = st.session_state.get("run_id")
     try:
-        e["status"] = apply_action(e.get("status", "drafted"), action)
+        if run_id is not None:
+            res = persistence.transition_email(
+                run_id, e.get("id"), action, user_id=st.session_state.get("user_id")
+            )
+            e["status"] = res["status"]
+            e["approved_override"] = res["approved_override"]
+        else:
+            e["status"] = apply_action(e.get("status", "drafted"), action)
         return True
-    except ValueError as ex:
+    except ValueError as ex:  # illegal transition
         st.warning(str(ex))
+        return False
+    except Exception as ex:
+        st.warning(f"Could not save: {ex}")
         return False
 
 
@@ -329,6 +346,8 @@ def _failure_reasons(e: dict) -> list:
     """Human-readable reasons a draft is not ready, for an informed override."""
     ev = e.get("eval") or {}
     reasons = []
+    if ev.get("binding_error"):
+        reasons.append(ev["binding_error"])
     for c in ev.get("checks", []):
         if not c.get("passed"):
             reasons.append(f"Check `{c['name']}`: {c.get('detail') or 'failed'}")
@@ -371,15 +390,10 @@ def _approval_controls(e: dict) -> None:
     # explicit, labeled override so the eval gate can't be bypassed by accident.
     approve_label = "Approve" if ready else "⚠️ Override & approve"
     if c1.button(approve_label, key=f"appr-{eid}"):
-        if not ready:
-            e["approved_override"] = True
-        if _apply_action(e, "approve"):
-            _persist_status(e)
+        if _transition(e, "approve"):  # service records override for not-ready drafts
             st.rerun()
     if c2.button("Reject", key=f"rej-{eid}"):
-        if _apply_action(e, "reject"):
-            e["approved_override"] = False  # rejected -> any prior override no longer applies
-            _persist_status(e)
+        if _transition(e, "reject"):
             st.rerun()
     if c3.button("Edit", key=f"edit-{eid}"):
         st.session_state[f"editing-{eid}"] = not st.session_state.get(f"editing-{eid}", False)
@@ -401,8 +415,8 @@ def _approval_controls(e: dict) -> None:
             ev["ready"] = ready_after_edit(had_judge, ev)
             e["eval"] = ev
             e["approved_override"] = False  # new version -> clear stale override flag
-            _apply_action(e, "edit")
-            _persist_edit(e)
+            e["status"] = apply_action(e.get("status", "drafted"), "edit")  # edit always allowed
+            _persist_edit(e)  # persists content + eval + status; clears override in DB
             st.session_state[f"editing-{eid}"] = False
             st.rerun()
 

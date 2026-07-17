@@ -565,7 +565,9 @@ def test_fanout_isolates_per_company_failure():
         async def arun(self, prompt):
             if "Globex" in prompt:
                 raise RuntimeError("boom")
-            return type("R", (), {"content": json.dumps({"name": "Acme", self._list_key: ["ok"]})})()
+            # Contacts must be dicts (coerced); insights can be strings.
+            value = [{"full_name": "A"}] if self._list_key == "contacts" else ["ok"]
+            return type("R", (), {"content": json.dumps({"name": "Acme", self._list_key: value})})()
 
         def run(self, prompt):
             return type("R", (), {"content": "{}"})()
@@ -576,7 +578,7 @@ def test_fanout_isolates_per_company_failure():
     contacts, research = asyncio.run(
         _fanout_contacts_and_research(agents, companies, "t", "o", max_workers=4)
     )
-    assert contacts[0]["contacts"] == ["ok"] and "error" in contacts[1]
+    assert contacts[0]["contacts"] == [{"full_name": "A"}] and "error" in contacts[1]
     assert [i["text"] for i in research[0]["insights"]] == ["ok"] and "error" in research[1]
 
 

@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>GTM Outreach — Multi-Agent</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <!-- Auth view -->
+  <section id="auth-view" class="auth hidden">
+    <div class="auth-card">
+      <h1>GTM Outreach</h1>
+      <p class="muted">Multi-agent B2B outreach with grounded evaluation.</p>
+      <form id="auth-form">
+        <label>Username<input id="auth-username" autocomplete="username" required /></label>
+        <label>Password<input id="auth-password" type="password" autocomplete="current-password" required /></label>
+        <div class="row">
+          <button type="submit" data-action="login" class="primary">Log in</button>
+          <button type="submit" data-action="register">Register</button>
+        </div>
+        <p id="auth-error" class="error" role="alert"></p>
+      </form>
+    </div>
+  </section>
+
+  <!-- App view -->
+  <div id="app-view" class="app hidden">
+    <aside class="sidebar">
+      <div class="brand">GTM Outreach</div>
+      <div class="userbox">
+        <span id="whoami" class="muted"></span>
+        <button id="logout" class="link">Log out</button>
+      </div>
+      <div id="keystatus" class="keystatus"></div>
+      <h3>Past campaigns</h3>
+      <div id="campaigns" class="campaigns"></div>
+      <div id="usercost" class="muted small"></div>
+    </aside>
+
+    <main class="main">
+      <h1>New outreach run</h1>
+      <p class="info">
+        Finds target companies, identifies contacts, researches genuine insights
+        (website + Reddit + job postings), and drafts tailored emails — each scored
+        and run through a deterministic + LLM faithfulness gate.
+      </p>
+
+      <form id="run-form" class="run-form">
+        <div class="grid2">
+          <label class="col">Target companies (industry, size, region, tech…)
+            <textarea id="target_desc" rows="3" required></textarea>
+          </label>
+          <label class="col">Your offering (1–3 sentences)
+            <textarea id="offering_desc" rows="3" required></textarea>
+          </label>
+        </div>
+        <div class="grid3">
+          <label>Your name<input id="sender_name" value="Sales Team" /></label>
+          <label>Your company<input id="sender_company" value="Our Company" /></label>
+          <label>Calendar link (optional)<input id="calendar_link" placeholder="https://cal.com/you" /></label>
+          <label>Number of companies<input id="num_companies" type="number" min="1" max="10" value="5" /></label>
+          <label>Email style
+            <select id="email_style"></select>
+          </label>
+        </div>
+        <button type="submit" id="run-btn" class="primary">Start outreach</button>
+      </form>
+
+      <div id="progress-wrap" class="progress-wrap hidden">
+        <div class="progress"><div id="progress-bar" class="progress-bar"></div></div>
+        <div id="progress-msg" class="muted small"></div>
+      </div>
+      <p id="run-error" class="error"></p>
+
+      <section id="results" class="results"></section>
+    </main>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

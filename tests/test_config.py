@@ -44,3 +44,35 @@ def test_default_model_ids():
     s = _bare_settings()
     assert s.company_finder_model == "gpt-5.4-nano"
     assert s.contact_finder_model == "gpt-4o"
+
+
+# --- web-config secure-by-default -------------------------------------------
+
+def test_environment_defaults_to_production(monkeypatch):
+    # A forgotten ENVIRONMENT must be treated as production (fail closed). The test
+    # suite pins ENVIRONMENT=development in conftest, so clear it to see the default.
+    monkeypatch.delenv("ENVIRONMENT", raising=False)
+    assert _bare_settings().is_production
+
+
+def test_production_rejects_default_secret():
+    s = _bare_settings(environment="production", session_secret="dev-insecure-change-me")
+    with pytest.raises(RuntimeError):
+        s.require_web_config()
+
+
+def test_production_rejects_short_secret():
+    # A copied placeholder that isn't the magic default but is still weak.
+    s = _bare_settings(environment="production", session_secret="changeme")
+    with pytest.raises(RuntimeError):
+        s.require_web_config()
+
+
+def test_production_accepts_strong_secret():
+    _bare_settings(environment="production", session_secret="x" * 40).require_web_config()
+
+
+def test_development_relaxes_requirement():
+    s = _bare_settings(environment="development", session_secret="dev-insecure-change-me")
+    assert not s.is_production
+    s.require_web_config()  # does not raise

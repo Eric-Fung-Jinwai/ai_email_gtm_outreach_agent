@@ -295,36 +295,128 @@ for user B) becomes genuinely worth it there; that's a separate future effort, a
 
 ---
 
-## Future — Multi-user (NOT started; captured so single-user assumptions are explicit)
+## Phase 11 — Multi-user  ✅ DONE (FastAPI + custom frontend)
 
-Goal noted for later. **Do not build ahead of need (YAGNI).** This is the map so the
-retrofit isn't a surprise. Nothing below is broken today.
+The final piece. Replaced the single-user assumption with real accounts + per-user
+data isolation, delivered as a **new FastAPI web app** (`server/`) with a custom
+**HTML/CSS/JS** frontend (`frontend/`). The `backend/` package stayed pure logic;
+the async-native `arun_pipeline` and the single persistence funnel made this an
+additive layer, not a rewrite.
 
-**Already multi-user-friendly (keep it that way):**
-- Stateless agents + event-loop-safe `arun_pipeline` (FastAPI-ready).
-- All DB access funnels through `backend/persistence.py` → user-scoping is a contained change.
-- Global run ids + `(run_id, email_id)` keys → no cross-user id collisions.
-- Additive schema migration → adding `user_id` is a one-liner, not a data migration.
-- Per-stage cost tracking → per-user cost is a `GROUP BY` later.
+**Identity / auth (session-based, no external IdP):**
+- [x] `users` table + stdlib `pbkdf2_hmac` (600k iters, per-user salt,
+      `hmac.compare_digest`) — no third-party crypto dep. Register / login / logout /
+      me over signed-cookie sessions (`SessionMiddleware`).
+- [x] Hardened: `session.clear()` before establishing identity (anti-fixation);
+      cookies `httponly` + `same_site=lax` + `https_only` in prod; default session
+      secret **rejected** outside `ENVIRONMENT=development`; strict Origin/Referer
+      guard (CSRF) on all cookie-auth mutations; username/password length+format
+      limits; generic login errors (no user-exists oracle).
 
-**Single-user assumptions to unwind (all deferrable):**
-- [ ] No identity/auth — biggest piece; add auth + per-request user identity.
-- [ ] Data not user-scoped — add `user_id` to `runs`/`emails`; filter `list_runs`,
-      `get_run`, `update_email_*`, `recently_contacted_companies`.
-- [ ] SQLite single-writer — fine now; move to Postgres for real concurrent traffic
-      (swap is contained thanks to the persistence abstraction).
-- [ ] Global API keys + unattributed cost — decide shared-vs-per-user (below).
+**Data user-scoping (all in `backend/persistence.py`):**
+- [x] `user_id` added to `runs` (emails scope via the run join — single source of
+      truth). `save_run`/`list_runs`/`get_run`/`transition_email`/`update_email_edit`/
+      `recently_contacted_companies` take a **keyword-only** `user_id`; cross-tenant
+      access returns `None` / raises → 404, never leaks another user's data.
+- [x] **Migration backfill:** older single-user rows are re-owned by a deterministic
+      passwordless `LOCAL_USER` (resolved by username, never a hardcoded id) so nothing
+      is orphaned once queries require `user_id`. The legacy Streamlit `app.py` runs as
+      that LOCAL_USER (still works, non-destructively).
+- [x] SQLite hardened for the (now multi-request) FastAPI process: WAL +
+      `busy_timeout` + `foreign_keys` per connection. Honest limit: writes are
+      serialized *per process*, not a true global single-writer; Postgres is the swap
+      for real concurrent traffic (contained by the persistence abstraction).
 
-**Product decisions multi-user forces (decide before building):**
-- [ ] **Cooldown scope:** per-user vs **organization-wide** (team dedup — two reps
-      shouldn't both email the same prospect). Depends on whether "multi-user" =
-      one company's team, or many independent users. `recently_contacted_companies`
-      is global today.
-- [ ] **Keys/billing:** shared keys with per-user cost attribution, or per-user keys.
+**Product decisions (resolved):**
+- [x] **Cooldown scope:** configurable `COOLDOWN_SCOPE` (`user` | `global`), default
+      `user`. Renamed from "org" — there is no org/team model, so cross-account dedup
+      is genuinely *global*, documented as such (org scoping would need
+      `organizations` + `memberships`).
+- [x] **Keys/billing:** shared keys from `.env` (Phase-1 principle held), per-user
+      cost attribution via `user_cost` (`GROUP BY`). Cost-abuse guard: in-memory
+      per-user (2) + global (10) active-run caps → `429`.
 
-**Discipline to hold now (cheap, keeps the door open):** keep ALL persistence in
-`backend/persistence.py` — no raw `sqlite3` elsewhere — so user-scoping stays a
-single-file change.
+**Run flow:** pipeline runs backgrounded as an asyncio task; progress streams over
+**SSE** (`loop.call_soon_threadsafe` queue push — thread-safe defensively). Job
+registry is in-memory / **single-process only** (documented; a multi-worker deploy
+needs a shared broker). Opaque random job ids; finished jobs retained until consumed
+or a TTL sweep.
+
+- [x] Tests: `tests/test_api.py` (auth, 401, session switch, run→SSE→reopen,
+      transition/edit, cross-user 404, CSRF 403, 429 cap, input validation, missing-key
+      400) + `tests/test_email_ops.py` + user-scoping/backfill/cooldown/pragma tests in
+      `tests/test_persistence.py`. Full suite green (160).
+
+**Acceptance:** ✅ Multiple users register/log in; each sees only their own campaigns;
+approvals/edits are tenant-isolated; cost is per-user; the eval subsystem is unchanged.
+Run with `uvicorn server.main:app` (single worker); legacy Streamlit `app.py` still runs.
+
+### Security hardening (review round) ✅ applied
+- [x] **Secure-by-default:** `ENVIRONMENT` defaults to **production** — a forgotten
+      setting fails closed (rejects the default session secret, HTTPS-only cookies).
+      Local dev opts in with `ENVIRONMENT=development`.
+- [x] **SSE lifecycle:** a client disconnect no longer drops a still-running job
+      (stays counted toward the concurrency cap + reconnectable); finished-job TTL is
+      measured from **completion**, not creation; SSE errors are generic to the client
+      with the full exception logged server-side (correlation ref).
+- [x] **Auth:** per-IP rate limit (429) on the PBKDF2-heavy login/register; dummy-hash
+      on missing/passwordless users to flatten timing; registration race maps
+      `IntegrityError` → 409; login stays a generic 401.
+- [x] **Approval concurrency:** optimistic conditional update (`WHERE status=<read>`)
+      → 409 on a lost race instead of silent last-write-wins.
+- [x] **XSS/URL:** untrusted research/job URLs scrubbed to http(s) server-side (+ a
+      client guard) before landing in an `href`.
+- [x] **Headers/CSP:** strict `default-src 'self'` CSP, `frame-ancestors 'none'`,
+      `nosniff`, `Referrer-Policy`, HSTS in prod. Self-contained same-origin frontend
+      needs no external/inline resources, so the strict CSP is safe.
+- [x] **CSRF:** Origin/Referer guard is now `TRUSTED_ORIGINS`-aware (correct behind a
+      reverse proxy). A per-request CSRF token is the stronger next step (below).
+- [x] **Prompt-injection:** the email-writer prompt builder now fences the
+      contacts/research blocks in explicit BEGIN/END *untrusted-data* delimiters and
+      repeats the data-not-instructions rule inline (not only in system instructions).
+- [x] **Input:** whitespace-only `target_desc`/`offering_desc` rejected (422);
+      `agents.py` agno imports are genuinely lazy again (import-clean restored).
+
+### Security hardening (review round 2) ✅ applied
+- [x] **Secure template:** `.env.example` no longer ships a working dev secret /
+      `ENVIRONMENT=development`; production is the default and `require_web_config`
+      now rejects the default **or any secret < 32 chars**, so a copied template
+      can't silently run insecurely.
+- [x] **Edit lost-update race:** added an `emails.version` optimistic-lock counter.
+      `update_email_edit` + `transition_email` take an `expected_version`, bump it,
+      and 409 on a stale write; the frontend threads the version and resyncs on 409.
+      `expected_version` is **required** on the API mutation schemas (omitting it is
+      422), so no client can silently fall back to last-write-wins — the optional
+      persistence param remains only for the legacy Streamlit/internal path.
+- [x] **Pipeline timeout:** each run has a hard deadline (`PIPELINE_TIMEOUT_SECONDS`);
+      a hung provider call is cancelled and emits a terminal timeout event, freeing the
+      per-user/global concurrency slot instead of holding it forever.
+- [x] **SSE recovery:** the client now rides brief drops via EventSource
+      auto-reconnect (backend keeps the running job alive), and after repeated failures
+      falls back to the campaign list instead of silently giving up.
+- [x] **Job sweep** runs on the stream + list endpoints too, so a finished-but-unopened
+      job is reclaimed without waiting for the next POST.
+- [x] **DB contention:** `sqlite3.OperationalError` ("database is locked") on approve/
+      edit maps to a clean **503 retry**, not a 500.
+- [x] **Rate-limiter memory:** keys are pruned/expired and hard-capped so spoofed
+      client IPs can't grow the table unbounded (edge/proxy limiting still recommended).
+
+### Deferred (real deployment, beyond this milestone — honest limits)
+- [ ] **Postgres** for true concurrent multi-writer traffic (SQLite writes are
+      serialized per process today; swap is contained behind `persistence.py`).
+- [ ] **Durable/multi-process SSE** (shared broker, e.g. Redis pub/sub) — the job
+      registry + auth rate limiter are in-memory / single-process; a multi-worker or
+      horizontally-scaled deploy needs both at the edge/broker.
+- [ ] **Per-request CSRF token** for cookie-auth writes (Origin check is the floor).
+- [ ] **Encryption-at-rest + retention/deletion** — SQLite stores contact PII and
+      generated emails in plaintext; a shared deploy needs FS ACLs, backups, and
+      ideally at-rest encryption.
+- [ ] **Organizations/memberships** model (would make cooldown genuinely org-scoped
+      rather than the current global-across-accounts option).
+- [ ] **OIDC/SSO** as an alternative to password auth.
+
+**Discipline held:** ALL persistence stays in `backend/persistence.py` — no raw
+`sqlite3` elsewhere — so user-scoping remained a contained, single-file change.
 
 ---
 
@@ -363,6 +455,32 @@ Strong, underused agentic-work signal.
       `.env.example` documents every setting; TODO.md is the living architecture doc.
 
 ---
+
+## Security / integrity review (round 2)
+
+- [x] **#3 Drafts bound to approved contacts.** After generation, each email's
+      `(company, contact)` is matched against the emailable set we fed the writer;
+      an unbound draft gets `eval.binding_error`, can never be ready
+      (`email_is_ready`), skips the judge, and is routed to "Needs review" with the
+      reason surfaced. Guards model slips / prompt injection.
+- [x] **#4 Real contact validation.** `_usable_contacts_for_emails` hard-requires a
+      syntactically valid email and explicit `inferred is False` (missing == inferred
+      → excluded). Domain mismatch vs the company's canonical host is a SOFT flag
+      (`domain_mismatch`) → lead-score −2 penalty, not a rejection; only compared when
+      the website yields a host. Helpers in `text_utils`.
+- [x] **#5 Malformed list elements can't crash the run.** Non-dict company and
+      contact elements are coerced out (like emails already were) — no `.get` on a
+      string/null.
+- [x] **#6 Approval invariant at the data layer.** `persistence.transition_email`
+      is the enforced command: loads status, validates via `apply_action` (raises on
+      illegal), records an override when approving a not-ready draft. UI routes
+      approve/reject through it; `update_email_status` demoted to internal primitive.
+- [x] **#1 Auth / tenant isolation** — done in Phase 11 (multi-user): session auth +
+      per-user data scoping enforced at the persistence layer (cross-tenant → 404).
+- [ ] **#2 Retrieval-anchored grounding** — NEXT: app-controlled Exa/JSearch retrieval
+      retained as `{evidence_id, url, excerpt, source_type}`; research model cites only
+      those ids; writer/judge see only cited retrieved records. Full page verification
+      stays pre-deploy.
 
 ## Trimmed / deferred (do NOT let these eat the spine)
 

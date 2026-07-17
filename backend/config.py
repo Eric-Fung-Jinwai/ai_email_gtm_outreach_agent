@@ -35,6 +35,50 @@ class Settings(BaseSettings):
     # Don't re-contact a company we generated outreach for within this many days.
     enable_contact_suppression: bool = True
     contact_cooldown_days: int = 30
+    # Cooldown scope (multi-user): "user" = each account's own history; "global" =
+    # across ALL accounts (cross-tenant dedup). There is no organization/team model,
+    # so "global" is genuinely global, not org-scoped — set it knowingly.
+    cooldown_scope: str = "user"
+
+    # --- Web app / auth (multi-user FastAPI frontend) ---
+    # Deployment environment. Defaults to "production" so a FORGOTTEN setting is
+    # SECURE by default (a real deploy can't silently run with a weak secret and
+    # insecure cookies). Local dev must OPT IN with ENVIRONMENT=development, which
+    # relaxes the secret requirement and drops the cookie Secure flag for http.
+    environment: str = "production"
+    # Secret that signs session cookies (Starlette SessionMiddleware). MUST be
+    # overridden outside development — see ``require_web_config``.
+    session_secret: str = "dev-insecure-change-me"
+    # Comma-separated public origins allowed to POST (CSRF guard). When set, the
+    # origin check compares the browser Origin against THIS list instead of the
+    # request host — correct behind a reverse proxy. Empty = fall back to host match.
+    trusted_origins: str = ""
+    # Hard ceiling on a single outreach run. A hung provider call is cancelled at
+    # this deadline so it can't hold a concurrency slot forever.
+    pipeline_timeout_seconds: int = 300
+
+    @property
+    def is_production(self) -> bool:
+        return self.environment.strip().lower() != "development"
+
+    def trusted_origin_list(self) -> List[str]:
+        return [o.strip().rstrip("/") for o in self.trusted_origins.split(",") if o.strip()]
+
+    def require_web_config(self) -> None:
+        """Fail fast if the web app is misconfigured for production.
+
+        Rejects both the known default secret AND any weak/short secret, so a
+        deployment that copied a template placeholder can't silently run insecurely.
+        """
+        if self.is_production and (
+            self.session_secret == "dev-insecure-change-me" or len(self.session_secret) < 32
+        ):
+            raise RuntimeError(
+                "SESSION_SECRET must be a strong random value (>=32 chars) in "
+                "production (ENVIRONMENT is not 'development'). Generate one with "
+                "`python -c \"import secrets; print(secrets.token_urlsafe(32))\"`, "
+                "or set ENVIRONMENT=development for local use."
+            )
 
     # --- Model IDs (overridable per agent) ---
     company_finder_model: str = "gpt-5.4-nano"
